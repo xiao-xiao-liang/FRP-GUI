@@ -153,4 +153,36 @@ describe('LogDashboard (日志监控组件)', () => {
     expect(screen.queryByText('daily status')).not.toBeInTheDocument();
     expect(screen.getByText('protocol frame')).toBeInTheDocument();
   });
+
+  it('大容量日志列表使用虚拟滚动，将渲染的 DOM 数量控制在视口安全范围内且支持检索', async () => {
+    vi.mocked(isTauriEnv).mockReturnValue(true);
+    const user = userEvent.setup();
+    const mockLogs = Array.from({ length: 2000 }, (_, i) => ({
+      id: `log-${i}`,
+      sequence: i + 1,
+      profileId: 'p1',
+      profileName: 'p1',
+      timestamp: `10:00:${String(i % 60).padStart(2, '0')}`,
+      level: i === 1999 ? ('error' as const) : ('info' as const),
+      message: i === 1999 ? 'critical error at line 1999' : `normal log message #${i}`,
+      raw: i === 1999 ? 'critical error at line 1999' : `normal log message #${i}`,
+    }));
+
+    render(
+      <LogDashboard
+        profiles={[makeProfile({ id: 'p1' })]}
+        logs={mockLogs}
+        onClearLogs={vi.fn()}
+      />
+    );
+
+    // 验证虚拟滚动：渲染出来的实际日志条目 DOM 节点数远小于总数（< 60），避免长列表卡死
+    const renderedElements = screen.getAllByTestId(/runtime-log-message-/);
+    expect(renderedElements.length).toBeLessThan(60);
+
+    // 验证通过关键词检索可以精确定位到目标日志
+    const searchInput = screen.getByPlaceholderText('搜索日志...');
+    await user.type(searchInput, 'critical error');
+    expect(await screen.findByText('critical error at line 1999')).toBeInTheDocument();
+  });
 });

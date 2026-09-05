@@ -35,8 +35,44 @@ export const LogDashboard: React.FC<LogDashboardProps> = ({
   const [wrapLogLines, setWrapLogLines] = useState<boolean>(true);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [frozenLogs, setFrozenLogs] = useState<LogEntry[] | null>(null);
+  const [scrollTop, setScrollTop] = useState<number>(0);
+  const [containerHeight, setContainerHeight] = useState<number>(600);
   const logEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  const ITEM_HEIGHT = 28;
+  const OVERSCAN = 8;
+
+  // 监听容器尺寸调整
+  useEffect(() => {
+    const updateHeight = () => {
+      if (scrollContainerRef.current) {
+        const h = scrollContainerRef.current.clientHeight;
+        if (h > 0) {
+          setContainerHeight(h);
+        }
+      }
+    };
+    updateHeight();
+    window.addEventListener('resize', updateHeight);
+    return () => window.removeEventListener('resize', updateHeight);
+  }, []);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    setScrollTop(target.scrollTop);
+    if (target.clientHeight > 0 && target.clientHeight !== containerHeight) {
+      setContainerHeight(target.clientHeight);
+    }
+  };
+
+  // 过滤条件变化时重置滚动位置至顶部
+  useEffect(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = 0;
+    }
+    setScrollTop(0);
+  }, [selectedProfileId, selectedLevel, searchKeyword]);
 
   const handleTogglePause = () => {
     setIsPaused((prev) => {
@@ -54,8 +90,11 @@ export const LogDashboard: React.FC<LogDashboardProps> = ({
 
   // 自动滚动到底部
   useEffect(() => {
-    if (autoScroll && !isPaused && logEndRef.current && typeof logEndRef.current.scrollIntoView === 'function') {
-      logEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (autoScroll && !isPaused && scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+      if (logEndRef.current && typeof logEndRef.current.scrollIntoView === 'function') {
+        logEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      }
     }
   }, [activeLogs, autoScroll, isPaused]);
 
@@ -79,6 +118,20 @@ export const LogDashboard: React.FC<LogDashboardProps> = ({
       return true;
     });
   }, [activeLogs, selectedProfileId, selectedLevel, searchKeyword]);
+
+  // 虚拟列表视口计算
+  const totalCount = filteredLogs.length;
+  const effectiveHeight = containerHeight > 0 ? containerHeight : 600;
+  const startIndex = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - OVERSCAN);
+  const endIndex = Math.min(
+    totalCount,
+    Math.floor((scrollTop + effectiveHeight) / ITEM_HEIGHT) + OVERSCAN
+  );
+  const visibleLogs = useMemo(() => {
+    return filteredLogs.slice(startIndex, endIndex);
+  }, [filteredLogs, startIndex, endIndex]);
+  const paddingTop = startIndex * ITEM_HEIGHT;
+  const paddingBottom = Math.max(0, (totalCount - endIndex) * ITEM_HEIGHT);
 
   // 统计信息
   const stats = useMemo(() => {
@@ -294,6 +347,7 @@ export const LogDashboard: React.FC<LogDashboardProps> = ({
       <div
         ref={scrollContainerRef}
         data-testid="runtime-log-viewport"
+        onScroll={handleScroll}
         className={`flex-1 min-h-0 overflow-y-auto ${wrapLogLines ? 'overflow-x-hidden' : 'overflow-x-auto'} bg-[#F7F8FA] p-3 text-[13px] leading-relaxed text-[#1F2329] select-text`}
       >
         <div className={wrapLogLines ? 'min-w-0' : 'min-w-max'}>
@@ -304,44 +358,47 @@ export const LogDashboard: React.FC<LogDashboardProps> = ({
               <p className="text-[12px] text-[#8F959E] mt-1">启动 FRP 穿透方案后，此处将实时输出运行日志与连接状态</p>
             </div>
           ) : (
-            filteredLogs.map((log, idx) => {
-              const levelClass =
-                log.level === 'error'
-                  ? 'text-[#F53F3F] font-medium'
-                  : log.level === 'warn'
-                  ? 'text-[#FF7D00]'
-                  : log.level === 'debug' || log.level === 'trace'
-                  ? 'text-[#722ED1]'
-                  : 'text-[#1F2329]';
+            <div style={{ paddingTop: `${paddingTop}px`, paddingBottom: `${paddingBottom}px`, position: 'relative' }}>
+              {visibleLogs.map((log, idx) => {
+                const actualIdx = startIndex + idx;
+                const levelClass =
+                  log.level === 'error'
+                    ? 'text-[#F53F3F] font-medium'
+                    : log.level === 'warn'
+                    ? 'text-[#FF7D00]'
+                    : log.level === 'debug' || log.level === 'trace'
+                    ? 'text-[#722ED1]'
+                    : 'text-[#1F2329]';
 
-              return (
-                <div
-                  key={log.id || idx}
-                  className={`flex min-w-0 items-start gap-2.5 rounded-[4px] px-2 py-1 transition-colors hover:bg-[#EFF3FF] ${wrapLogLines ? '' : 'w-max min-w-full'}`}
-                >
-                  <span className="text-[#8F959E] select-none text-[12px] w-8 text-right shrink-0">
-                    {idx + 1}
-                  </span>
-                  <span className="text-[#8F959E] shrink-0 select-none text-[12px]">
-                    {log.timestamp}
-                  </span>
-                  <span className="shrink-0 select-none">
-                    {getLevelBadge(log.level)}
-                  </span>
-                  <span className="px-1.5 py-0.2 rounded-[4px] text-[11px] bg-[#EFF3FF] text-[#1456C8] shrink-0 select-none">
-                    {log.profileName}
-                  </span>
-                  <span
-                    data-testid={`runtime-log-message-${log.id}`}
-                    className={`min-w-0 flex-1 ${wrapLogLines ? 'whitespace-pre-wrap break-words' : 'whitespace-pre'} ${levelClass}`}
+                return (
+                  <div
+                    key={log.id || actualIdx}
+                    className={`flex min-w-0 items-start gap-2.5 rounded-[4px] px-2 py-1 transition-colors hover:bg-[#EFF3FF] ${wrapLogLines ? '' : 'w-max min-w-full'}`}
                   >
-                    {log.message}
-                  </span>
-                </div>
-              );
-            })
+                    <span className="text-[#8F959E] select-none text-[12px] w-8 text-right shrink-0">
+                      {actualIdx + 1}
+                    </span>
+                    <span className="text-[#8F959E] shrink-0 select-none text-[12px]">
+                      {log.timestamp}
+                    </span>
+                    <span className="shrink-0 select-none">
+                      {getLevelBadge(log.level)}
+                    </span>
+                    <span className="px-1.5 py-0.2 rounded-[4px] text-[11px] bg-[#EFF3FF] text-[#1456C8] shrink-0 select-none">
+                      {log.profileName}
+                    </span>
+                    <span
+                      data-testid={`runtime-log-message-${log.id}`}
+                      className={`min-w-0 flex-1 ${wrapLogLines ? 'whitespace-pre-wrap break-words' : 'whitespace-pre'} ${levelClass}`}
+                    >
+                      {log.message}
+                    </span>
+                  </div>
+                );
+              })}
+              <div ref={logEndRef} style={{ position: 'absolute', bottom: 0, height: '1px', width: '1px', pointerEvents: 'none' }} />
+            </div>
           )}
-          <div ref={logEndRef} />
         </div>
       </div>
     </div>

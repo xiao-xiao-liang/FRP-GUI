@@ -6,6 +6,7 @@ import { startProfileInstance, stopProfileInstance, isTauriEnv, getRuntimeStates
 import { DashboardOverview } from './features/dashboard/DashboardOverview';
 import { ProfileList } from './features/profiles/ProfileList';
 import { LogDashboard } from './features/logs/LogDashboard';
+import { mergeLogEntries } from './features/logs/logMerger';
 import { CoreManagerPage } from './features/cores/CoreManagerPage';
 import { ServerNodeManagerPage } from './features/servers/ServerNodeManagerPage';
 import { ConfigEditorModal } from './features/editor/ConfigEditorModal';
@@ -373,39 +374,7 @@ export function AppLayout() {
 
   const mergeRuntimeLogs = useCallback((events: FrpcRuntimeLogEvent[]) => {
     if (!events || events.length === 0) return;
-    setRuntimeLogs((previous) => {
-      // 检查是否有 profile 重启后序号被重置（例如收到 sequence === 1），如有则剔除该 profile 既有旧日志
-      const resetProfileIds = new Set<string>();
-      for (const event of events) {
-        if (event.sequence === 1) {
-          resetProfileIds.add(event.profileId);
-        }
-      }
-
-      const filteredPrevious = resetProfileIds.size > 0
-        ? previous.filter((entry) => !resetProfileIds.has(entry.profileId))
-        : previous;
-
-      const byId = new Map(filteredPrevious.map((entry) => [entry.id, entry]));
-      for (const event of events) {
-        const id = `runtime-${event.profileId}-${event.sequence}`;
-        byId.set(id, {
-          id,
-          sequence: event.sequence,
-          profileId: event.profileId,
-          profileName: event.profileId,
-          timestamp: event.timestamp,
-          level: event.level,
-          message: event.message,
-          raw: `[${event.timestamp}] [${event.level.toUpperCase()}] ${event.message}`,
-        });
-      }
-      return [...byId.values()]
-        .sort((left, right) => left.timestamp.localeCompare(right.timestamp)
-          || left.profileId.localeCompare(right.profileId)
-          || left.sequence - right.sequence)
-        .slice(-2000);
-    });
+    setRuntimeLogs((previous) => mergeLogEntries(previous, events));
 
     for (const event of events) {
       if (event.level === 'warn') {
