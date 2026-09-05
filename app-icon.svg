@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E3A8A"/>
+      <stop offset="50%" stop-color="#2563EB"/>
+      <stop offset="100%" stop-color="#0EA5E9"/>
+    </linearGradient>
+    <linearGradient id="tunnelGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#A855F7"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Background rounded rect -->
+  <rect x="32" y="32" width="448" height="448" rx="96" fill="url(#bgGrad)" filter="url(#shadow)"/>
+
+  <!-- Subtle border outline -->
+  <rect x="34" y="34" width="444" height="444" rx="94" fill="none" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="4"/>
+
+  <!-- Tunnel / Bridge Arch Graphics -->
+  <g transform="translate(256, 256)">
+    <!-- Central Fast Connection Ring -->
+    <circle cx="0" cy="0" r="110" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="16" stroke-dasharray="16 12"/>
+
+    <!-- Left to Right Arrow (Forward Proxy) -->
+    <path d="M-110 -35 L40 -35 L40 -65 L110 0 L40 65 L40 35 L-110 35 Z" fill="#FFFFFF" opacity="0.95" filter="url(#shadow)"/>
+
+    <!-- Reverse Arrow / Tunnel indicator (Fast return channel) -->
+    <path d="M70 45 L-60 45 L-60 65 L-115 25 L-60 -15 L-60 5 L70 5 Z" fill="#38BDF8" opacity="0.9"/>
+
+    <!-- Core pulse node -->
+    <circle cx="0" cy="0" r="22" fill="#FBBF24"/>
+    <circle cx="0" cy="0" r="10" fill="#FFFFFF"/>
+
+    <!-- Status dot indicators -->
+    <circle cx="-130" cy="-35" r="12" fill="#34D399"/>
+    <circle cx="130" cy="0" r="12" fill="#60A5FA"/>
+  </g>
+</svg>
