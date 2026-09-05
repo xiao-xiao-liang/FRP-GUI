@@ -1,0 +1,433 @@
+/* =========================================================================
+   飞书多维表格 1:1 Markdown Renderer 官方样式系统
+   规范基准：DESIGN.md, index.html, style.css
+   ========================================================================= */
+
+/* 1. Markdown 根容器 */
+.base-chatbot-maker-md-root {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 400;
+  color: var(--text-title, #1F2329);
+  font-feature-settings: "tnum";
+  font-variant-numeric: tabular-nums;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  user-select: text;
+}
+
+/* 2. 垂直节奏 (Vertical Rhythm) */
+.base-chatbot-maker-md-root > * + * {
+  margin-top: 8px !important;
+}
+
+.base-chatbot-maker-md-root > .base-chatbot-maker-message-container__specialRenderMessage + *,
+.base-chatbot-maker-md-root > * + .base-chatbot-maker-message-container__specialRenderMessage {
+  margin-top: 12px !important;
+}
+
+/* 3. 段落 */
+.base-chatbot-maker-md-comp-paragraph {
+  color: var(--text-title, #1F2329);
+  font-size: 14px;
+  line-height: 22px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 4. 标题体系 */
+.base-chatbot-maker-md-comp-title {
+  color: var(--text-title, #1F2329);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  margin: 0;
+}
+
+.base-chatbot-maker-md-comp-title--h1 {
+  font-size: 18px;
+  line-height: 28px;
+  font-weight: 500;
+}
+
+.base-chatbot-maker-md-comp-title--h2 {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
+}
+
+.base-chatbot-maker-md-comp-title--h3,
+.base-chatbot-maker-md-comp-title--h4,
+.base-chatbot-maker-md-comp-title--h5,
+.base-chatbot-maker-md-comp-title--h6 {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+}
+
+/* 5. 粗体、斜体、删除线 */
+.base-chatbot-maker-md-root strong {
+  font-weight: 700;
+  color: var(--text-title, #1F2329);
+}
+
+.base-chatbot-maker-md-root em {
+  font-style: italic;
+}
+
+.base-chatbot-maker-md-root del {
+  color: var(--text-caption, #646A73);
+  text-decoration: line-through;
+}
+
+/* 6. 分割线 */
+.base-chatbot-maker-md-comp-divider {
+  background-color: var(--line-divider-default, rgba(31, 35, 41, 0.15));
+  height: 0.5px;
+  margin: 12px 0;
+  width: 100%;
+  border: none;
+}
+
+/* 7. 有序列表 */
+.base-chatbot-maker-md-comp-ordered-list {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.base-chatbot-maker-md-comp-ordered-list > li {
+  color: var(--text-title, #1F2329);
+  font-size: 14px;
+  line-height: 22px;
+  list-style: decimal;
+  padding-left: 4px;
+  vertical-align: top;
+}
+
+.base-chatbot-maker-md-comp-ordered-list > li::marker {
+  color: var(--icon-n1, #2B2F36);
+  font-weight: 400;
+}
+
+.base-chatbot-maker-md-comp-ordered-list > li:before,
+.base-chatbot-maker-md-comp-ordered-list li:before {
+  display: none !important;
+  content: none !important;
+}
+
+.base-chatbot-maker-md-comp-ordered-list > li + li,
+.base-chatbot-maker-md-comp-ordered-list > li ol,
+.base-chatbot-maker-md-comp-ordered-list > li ul {
+  margin-top: 6px;
+}
+
+/* 8. 无序列表 */
+.base-chatbot-maker-md-comp-unordered-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.base-chatbot-maker-md-comp-unordered-list-item {
+  color: var(--text-title, #1F2329);
+  font-size: 14px;
+  line-height: 22px;
+  list-style-type: none;
+  padding-left: 26px !important;
+  position: relative;
+}
+
+.base-chatbot-maker-md-comp-unordered-list-item:before {
+  background-color: var(--icon-n1, #2B2F36);
+  border-radius: 50%;
+  content: "";
+  display: inline-block;
+  height: 4px;
+  left: 9px;
+  position: absolute;
+  top: 9px;
+  vertical-align: middle;
+  width: 4px;
+}
+
+.base-chatbot-maker-md-comp-unordered-list-item + .base-chatbot-maker-md-comp-unordered-list-item,
+.base-chatbot-maker-md-comp-unordered-list-item ol,
+.base-chatbot-maker-md-comp-unordered-list-item ul {
+  margin-top: 6px;
+}
+
+/* 9. 任务列表 */
+.base-chatbot-maker-md-root .task-list-item {
+  list-style: none;
+  padding-left: 26px;
+  position: relative;
+}
+
+.base-chatbot-maker-md-root .task-list-item:before {
+  display: none !important;
+}
+
+.base-chatbot-maker-md-root .task-list-item > input[type="checkbox"] {
+  margin: 0 8px 0 0;
+  vertical-align: -2px;
+  accent-color: #3370FF;
+}
+
+/* 10. 行内代码 */
+.base-chatbot-maker-md-comp-inlineCode {
+  background-color: var(--N900-10, rgba(31, 35, 41, 0.1));
+  border-radius: 4px;
+  color: var(--text-title, #1F2329);
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.9em;
+  margin: 0 2px;
+  padding: 1px 4px;
+  word-break: break-word;
+}
+
+/* 11. 代码块 */
+.base-chatbot-maker-md-comp-codeBlock-wrapper {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  background-color: var(--bg-body-overlay, #F5F6F7);
+  border: 0.5px solid var(--line-border-card, #DEE0E3);
+}
+
+.base-chatbot-maker-md-comp-codeBlock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 0.5px solid var(--line-border-card, #DEE0E3);
+  background-color: rgba(31, 35, 41, 0.03);
+  color: var(--text-caption, #646A73);
+  font-size: 12px;
+  user-select: none;
+}
+
+.base-chatbot-maker-md-comp-codeBlock {
+  background-color: transparent;
+  border: none;
+  font-size: 13px;
+  line-height: 20px;
+  margin: 0;
+  overflow-x: auto;
+  padding: 12px;
+  scrollbar-color: rgba(31, 35, 41, 0.25) transparent;
+  scrollbar-width: thin;
+}
+
+.base-chatbot-maker-md-comp-codeBlock code {
+  background-color: initial;
+  border-radius: 0;
+  margin: 0;
+  padding: 0;
+  white-space: pre;
+  word-wrap: normal;
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  color: var(--text-title, #1F2329);
+}
+
+/* 12. GFM 自增粘性序号表格 */
+.base-chatbot-maker-md-comp-table {
+  width: 100%;
+  margin: 0;
+}
+
+.base-chatbot-maker-md-comp-table .table-container {
+  border: 0.5px solid var(--line-border-card, #DEE0E3);
+  border-radius: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  position: relative;
+  scrollbar-color: rgba(31, 35, 41, 0.25) transparent;
+  scrollbar-width: thin;
+  width: 100%;
+  background-color: #FFFFFF;
+}
+
+.base-chatbot-maker-md-comp-table .custom-table {
+  border: none;
+  border-collapse: initial;
+  border-spacing: 0;
+  max-width: max-content;
+  min-width: 100%;
+  width: max-content;
+}
+
+.base-chatbot-maker-md-comp-table .custom-table td,
+.base-chatbot-maker-md-comp-table .custom-table th {
+  border-top: 0.5px solid var(--line-border-card, #DEE0E3);
+  box-sizing: border-box;
+  max-width: 280px;
+  min-width: 80px;
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+  word-wrap: break-word;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.base-chatbot-maker-md-comp-table .custom-table th {
+  font-weight: 500;
+  color: var(--text-caption, #646A73);
+}
+
+.base-chatbot-maker-md-comp-table .custom-table thead th {
+  background: var(--bg-float-overlay, #F5F6F7);
+}
+
+.base-chatbot-maker-md-comp-table .custom-table tr:first-child th {
+  border-top: none;
+}
+
+.base-chatbot-maker-md-comp-table .custom-table td:nth-child(n+3),
+.base-chatbot-maker-md-comp-table .custom-table th:nth-child(n+3) {
+  border-left: 0.5px solid var(--line-border-card, #DEE0E3);
+}
+
+/* 序号列首列 Sticky 定位 */
+.base-chatbot-maker-md-comp-table .custom-table td:first-child,
+.base-chatbot-maker-md-comp-table .custom-table th:first-child {
+  background: var(--bg-float-overlay, #F5F6F7);
+  border-right: 0.5px solid var(--line-border-card, #DEE0E3);
+  border-left: none;
+  left: 0;
+  min-width: 30px;
+  width: 30px;
+  padding: 8px 10px;
+  position: sticky;
+  text-align: center;
+  z-index: 1;
+  color: var(--text-placeholder, #8F959E);
+  font-size: 12px;
+  user-select: none;
+}
+
+.base-chatbot-maker-md-comp-table .custom-table tr td:first-child,
+.base-chatbot-maker-md-comp-table .custom-table tr th:first-child {
+  border-left: none;
+}
+
+.base-chatbot-maker-md-comp-table .custom-table tr:last-child td {
+  border-bottom: none;
+}
+
+.base-chatbot-maker-md-comp-table .custom-table td:last-child,
+.base-chatbot-maker-md-comp-table .custom-table th:last-child {
+  border-right: none;
+}
+
+.base-chatbot-maker-md-comp-table .custom-table tbody tr:hover td {
+  background-color: rgba(31, 35, 41, 0.02);
+}
+
+.base-chatbot-maker-md-comp-table .custom-table tbody tr:hover td:first-child {
+  background-color: #ECEEEF;
+}
+
+/* 13. 引用块 */
+.base-chatbot-maker-md-comp-blockquote {
+  margin: 0;
+  padding-left: 12px;
+  position: relative;
+}
+
+.base-chatbot-maker-md-comp-blockquote:before {
+  background-color: var(--line-divider-default, rgba(31, 35, 41, 0.15));
+  border-radius: 2px;
+  content: "";
+  height: 100%;
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 2px;
+}
+
+.base-chatbot-maker-md-comp-blockquote * {
+  color: var(--text-placeholder, #8F959E) !important;
+}
+
+/* 14. 链接 */
+.base-chatbot-maker-md-comp-link {
+  border-radius: 4px;
+  color: var(--text-link-normal, #1456F0);
+  display: inline-block;
+  padding: 0 2px;
+  text-decoration: none;
+  vertical-align: inherit;
+  word-break: break-word;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.base-chatbot-maker-md-comp-link:hover {
+  background-color: var(--fill-selected, rgba(31, 35, 41, 0.06));
+  color: var(--text-link-hover, #336DF4) !important;
+}
+
+.base-chatbot-maker-md-comp-link:visited {
+  color: var(--text-link-normal, #1456F0) !important;
+}
+
+/* 15. 图片与 1:1 错误态卡片 */
+.base-chatbot-maker-md-comp-image {
+  display: block;
+  margin: 8px 0;
+  max-width: 100%;
+}
+
+.base-chatbot-maker-md-comp-image img {
+  border: 0.5px solid var(--line-border-card, #DEE0E3);
+  border-radius: 6px;
+  height: auto;
+  max-height: 400px;
+  max-width: 100%;
+  object-fit: contain;
+  background-color: #FFFFFF;
+}
+
+.base-chatbot-maker-md-root .base-chatbot-maker-md-comp-image__error {
+  align-items: center;
+  background: var(--N900-5, rgba(31, 35, 41, 0.05));
+  border: 0.5px solid var(--N900-10, rgba(31, 35, 41, 0.1));
+  border-radius: 6px;
+  display: flex;
+  height: 140px;
+  justify-content: center;
+  width: 160px;
+}
+
+.base-chatbot-maker-md-root .base-chatbot-maker-md-comp-image__error .universe-icon {
+  color: var(--icon-disabled, #BBBFC4);
+  font-size: 32px;
+}
+
+/* 16. 生成打字光标 */
+.base-chatbot-maker-md-dotContainer {
+  display: inline-flex;
+  padding: 0 4px;
+  vertical-align: middle;
+}
+
+.base-chatbot-maker-md-dotFlash {
+  animation: base-chatbot-maker-md-cursor-flashing 0.8s ease infinite alternate;
+  background-color: var(--icon-n2, #646A73);
+  border-radius: 50%;
+  display: inline-flex;
+  height: 6px;
+  width: 6px;
+}
+
+@keyframes base-chatbot-maker-md-cursor-flashing {
+  0% {
+    opacity: 0.2;
+    transform: scale(0.85);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}

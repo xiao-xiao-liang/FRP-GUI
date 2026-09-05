@@ -1,0 +1,407 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: LarkHackSafariFont, LarkEmojiFont, LarkChineseQuote, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Tahoma, "PingFang SC", "Microsoft Yahei", Arial, "Hiragino Sans GB", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-mono: SFMono-Regular, Consolas, "Liberation Mono", Menlo, Courier, monospace;
+
+  --color-feishu-blue: #3370ff;
+  --color-feishu-blue-hover: #2860e1;
+  --color-feishu-blue-light: #e8f3ff;
+  --color-feishu-text-primary: #1f2329;
+  --color-feishu-text-secondary: #646a75;
+  --color-feishu-text-muted: #8f959e;
+  --color-feishu-border: #d0d3d6;
+  --color-feishu-border-light: #dee0e1;
+  --color-feishu-bg-canvas: #ffffff;
+  --color-feishu-bg-panel: #ffffff;
+  --color-feishu-success: #00b42a;
+  --color-feishu-success-bg: #e6f7ed;
+  --color-feishu-warning: #ff7d00;
+  --color-feishu-warning-bg: #fff7e8;
+  --color-feishu-danger: #f53f3f;
+  --color-feishu-danger-bg: #ffecec;
+  --color-feishu-purple: #8d55ed;
+  --color-feishu-purple-bg: #f2e9fe;
+}
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 215 14% 14%;
+    --card: 0 0% 100%;
+    --card-foreground: 215 14% 14%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 14% 14%;
+    --primary: 221 100% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 14% 96%;
+    --secondary-foreground: 215 14% 14%;
+    --muted: 210 14% 96%;
+    --muted-foreground: 215 10% 50%;
+    --accent: 210 14% 96%;
+    --accent-foreground: 215 14% 14%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 210 10% 88%;
+    --input: 210 10% 88%;
+    --ring: 221 100% 60%;
+    --radius: 0.375rem;
+  }
+
+  * {
+    border-color: #dee0e1;
+    box-sizing: border-box;
+  }
+}
+
+/* 飞书官方 DESIGN.md 识别的标准字体栈 (全局根节点、表单控件、Portal、弹窗全量生效) */
+html,
+body,
+#root,
+button,
+input,
+select,
+textarea,
+optgroup,
+[data-radix-popper-content-wrapper],
+[data-radix-dropdown-menu-content],
+[role="menu"],
+[role="menuitem"],
+[role="tooltip"],
+.feishu-tooltip {
+  font-family: LarkHackSafariFont, LarkEmojiFont, LarkChineseQuote, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Tahoma, "PingFang SC", "Microsoft Yahei", Arial, "Hiragino Sans GB", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji" !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, Courier, monospace !important;
+}
+
+/* 保留数值输入语义与键盘操作，仅移除无必要的浏览器微调箭头。 */
+input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #ffffff;
+  color: #1f2329;
+  font-size: 14px;
+}
+
+/* 1:1 飞书官方 Markdown 与有序列表排版体系 (精细紧致调优) */
+.base-chatbot-maker-md-root {
+  color: #1f2329;
+  font-size: 14px;
+  line-height: 22px;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  font-feature-settings: "tnum";
+  font-variant-numeric: tabular-nums;
+}
+
+.base-chatbot-maker-md-comp-paragraph {
+  color: #1f2329;
+  font-size: 14px;
+  line-height: 22px;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+/* 段落与大项标题之间的间距 (10px) */
+.base-chatbot-maker-md-comp-paragraph + .base-chatbot-maker-md-comp-title {
+  margin-top: 10px !important;
+}
+
+/* 列表与下一大项标题之间的间距 (12px) */
+.base-chatbot-maker-md-comp-ordered-list + .base-chatbot-maker-md-comp-title {
+  margin-top: 12px !important;
+}
+
+/* 列表与结尾段落之间的间距 (10px) */
+.base-chatbot-maker-md-comp-ordered-list + .base-chatbot-maker-md-comp-paragraph {
+  margin-top: 10px !important;
+}
+
+/* 大项标题：字重 500，字号 14px，行高 22px，下方留出恰到好处的 6px 间隙 */
+.base-chatbot-maker-md-comp-title {
+  color: #1f2329;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  margin-top: 10px !important;
+  margin-bottom: 6px !important;
+}
+
+.base-chatbot-maker-md-comp-title:first-child {
+  margin-top: 0 !important;
+}
+
+/* 有序列表缩进规范 (缩进 22px + li 内部 4px = 26px 深度缩进) */
+.base-chatbot-maker-md-comp-ordered-list {
+  padding-left: 22px !important;
+  margin: 0 !important;
+  list-style-type: decimal !important;
+}
+
+.base-chatbot-maker-md-comp-ordered-list > li {
+  color: #1f2329;
+  font-size: 14px;
+  line-height: 22px;
+  list-style-type: decimal !important;
+  padding-left: 4px !important;
+  vertical-align: top;
+}
+
+.base-chatbot-maker-md-comp-ordered-list > li::marker {
+  color: #1f2329;
+  font-weight: 400;
+}
+
+.base-chatbot-maker-md-comp-ordered-list > li + li {
+  margin-top: 4px !important;
+}
+
+.base-chatbot-maker-md-comp-ordered-list > li strong {
+  font-weight: 500;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(31, 35, 41, 0.15);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(31, 35, 41, 0.3);
+}
+
+/* 1:1 飞书输入框自适应撑起与 2s 自动淡出精细滚动条 */
+.feishu-chat-textarea {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(31, 35, 41, 0.25) transparent;
+}
+
+.feishu-chat-textarea::-webkit-scrollbar {
+  width: 5px;
+}
+
+.feishu-chat-textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.feishu-chat-textarea::-webkit-scrollbar-thumb {
+  background: rgba(31, 35, 41, 0.25);
+  border-radius: 9999px;
+  transition: background-color 0.25s ease;
+}
+
+.feishu-chat-textarea::-webkit-scrollbar-thumb:hover {
+  background: rgba(31, 35, 41, 0.4);
+}
+
+.feishu-chat-textarea.scrollbar-hidden {
+  scrollbar-color: transparent transparent !important;
+}
+
+.feishu-chat-textarea.scrollbar-hidden::-webkit-scrollbar-thumb {
+  background: transparent !important;
+}
+
+/* 飞书官方 Tooltip 1:1 物理级弹性与淡入淡出动效 */
+@keyframes feishuTooltipInBottom {
+  0% {
+    opacity: 0;
+    transform: scale(0.92) translateY(-2px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes feishuTooltipInTop {
+  0% {
+    opacity: 0;
+    transform: scale(0.92) translateY(2px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes feishuTooltipOut {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
+
+.feishu-tooltip {
+  transform-origin: var(--radix-tooltip-content-transform-origin);
+}
+
+.feishu-tooltip[data-state='delayed-open'][data-side='bottom'],
+.feishu-tooltip[data-state='instant-open'][data-side='bottom'] {
+  animation: feishuTooltipInBottom 150ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.feishu-tooltip[data-state='delayed-open'][data-side='top'],
+.feishu-tooltip[data-state='instant-open'][data-side='top'] {
+  animation: feishuTooltipInTop 150ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.feishu-tooltip[data-state='delayed-open']:not([data-side]),
+.feishu-tooltip[data-state='instant-open']:not([data-side]) {
+  animation: feishuTooltipInBottom 150ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.feishu-tooltip[data-state='closed'] {
+  animation: feishuTooltipOut 100ms ease-in forwards;
+}
+
+/* 1:1 飞书官方 AI Shiny Text (文字流光) 动画与样式规范 */
+@keyframes shiny-text {
+  0% {
+    background-position-x: -200%;
+  }
+  to {
+    background-position-x: 320%;
+  }
+}
+
+.bt-comp-web-ai-shiny-text {
+  --shiny-text-secondary: var(--color-feishu-text-muted, #8f959e);
+  --shimmer-contrast: #e3e3e3;
+  --shiny-animation-duration: 4s;
+  display: inline-block;
+  min-width: 0;
+  position: relative;
+}
+
+.bt-comp-web-ai-shiny-text--disable-shiny > .bt-comp-web-ai-shiny-text__text {
+  animation: none;
+  background-image: none;
+  color: var(--shiny-text-secondary);
+}
+
+.bt-comp-web-ai-shiny-text__text {
+  animation-duration: var(--shiny-animation-duration);
+  animation-iteration-count: infinite;
+  animation-name: shiny-text;
+  background: var(--shiny-text-secondary) linear-gradient(
+    to left,
+    var(--shiny-text-secondary) 0,
+    var(--shimmer-contrast) 40%,
+    var(--shimmer-contrast) 60%,
+    var(--shiny-text-secondary) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  background-repeat: no-repeat;
+  background-size: 70% 200%;
+  color: transparent;
+  max-width: 100%;
+  transition: opacity 0.3s ease-in-out;
+  width: -webkit-fit-content;
+  width: -moz-fit-content;
+  width: fit-content;
+  will-change: background-position;
+}
+
+/* 1:1 飞书官方 丝滑流式滚动骨架屏 (Skeleton Screen Stream) 规范 */
+@keyframes bt-comp-web-skeleton-screen-scroll {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(0, -50%, 0);
+  }
+}
+
+.bt-comp-web-skeleton-screen {
+  animation: bt-comp-web-skeleton-screen-scroll 10s linear infinite;
+  display: flex;
+  flex-direction: column;
+  max-width: 628px;
+  width: 100%;
+  will-change: transform;
+}
+
+.bt-comp-web-skeleton-screen--paused {
+  animation-play-state: paused;
+}
+
+.bt-comp-web-skeleton-screen__group {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: 14px;
+  flex-shrink: 0;
+  width: 100%;
+}
+
+.bt-comp-web-skeleton-screen__row {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  width: 100%;
+}
+
+.bt-comp-web-skeleton-screen__row--start {
+  align-items: flex-start;
+}
+
+.bt-comp-web-skeleton-screen__icon {
+  flex-shrink: 0;
+  color: var(--color-feishu-text-muted, #8f959e);
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+.bt-comp-web-skeleton-screen__block {
+  background-color: #f5f6f7;
+  border-radius: 9999px;
+  flex-shrink: 0;
+  height: 14px;
+}
+
+/* 飞书 1:1 右侧插画矢量微浮动动效 */
+@keyframes feishuFloat {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
