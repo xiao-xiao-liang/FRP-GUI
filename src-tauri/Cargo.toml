@@ -35,7 +35,9 @@ sha2 = "0.10"
 base64 = "0.22"
 regex = "1.13.1"
 
-
-
-
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
 

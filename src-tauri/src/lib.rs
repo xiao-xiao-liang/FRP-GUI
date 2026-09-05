@@ -437,6 +437,21 @@ pub struct DownloadCoreResult {
     pub error: Option<String>,
 }
 
+pub fn validate_official_download_url(url: &str) -> Result<(&str, &str), String> {
+    const PREFIX: &str = "https://github.com/fatedier/frp/releases/download/";
+    if !url.starts_with(PREFIX) {
+        return Err("仅支持从 GitHub 官方仓库下载 FRP 核心程序".to_string());
+    }
+    let remainder = &url[PREFIX.len()..];
+    let parts: Vec<&str> = remainder.split('/').collect();
+    if parts.len() != 2 || parts[0].trim().is_empty() || parts[1].trim().is_empty() {
+        return Err("非法的 GitHub Release 资产下载地址".to_string());
+    }
+    let tag = parts[0];
+    let asset_name = parts[1];
+    Ok((tag, asset_name))
+}
+
 #[tauri::command]
 async fn download_and_extract_core(
     download_url: String,
@@ -445,6 +460,23 @@ async fn download_and_extract_core(
     target_os: String,
     target_arch: String,
 ) -> Result<DownloadCoreResult, String> {
+    // 0. 验证官方下载源
+    let (tag, asset_name) = match validate_official_download_url(&download_url) {
+        Ok(res) => res,
+        Err(e) => {
+            return Ok(DownloadCoreResult {
+                success: false,
+                exe_path: String::new(),
+                target_dir: target_dir.clone(),
+                size_bytes: 0,
+                version,
+                os: target_os,
+                arch: target_arch,
+                error: Some(e),
+            });
+        }
+    };
+
     let target_path = std::path::PathBuf::from(&target_dir);
     if let Err(e) = std::fs::create_dir_all(&target_path) {
         return Ok(DownloadCoreResult {
@@ -459,13 +491,56 @@ async fn download_and_extract_core(
         });
     }
 
-    // 1. 发起网络请求下载预编译压缩包
+    // 1. 构建 HTTP 客户端
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .user_agent("FRP-GUI-Client/1.0")
         .build()
         .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
+    // 2. 获取同 release 的官方 SHA-256 校验和文件
+    let checksums_url = format!("https://github.com/fatedier/frp/releases/download/{tag}/frp_sha256_checksums.txt");
+    let checksums_resp = client
+        .get(&checksums_url)
+        .send()
+        .await
+        .map_err(|e| format!("下载官方 SHA-256 校验文件失败: {}", e))?;
+
+    if !checksums_resp.status().is_success() {
+        return Ok(DownloadCoreResult {
+            success: false,
+            exe_path: String::new(),
+            target_dir: target_dir.clone(),
+            size_bytes: 0,
+            version,
+            os: target_os,
+            arch: target_arch,
+            error: Some("下载官方 SHA-256 校验文件失败，请检查版本是否存在".to_string()),
+        });
+    }
+
+    let checksums_text = checksums_resp
+        .text()
+        .await
+        .map_err(|e| format!("读取官方 SHA-256 校验内容失败: {}", e))?;
+
+    let expected_hash = match crate::frps_deployment::checksum_for_asset(&checksums_text, asset_name) {
+        Ok(h) => h,
+        Err(e) => {
+            return Ok(DownloadCoreResult {
+                success: false,
+                exe_path: String::new(),
+                target_dir: target_dir.clone(),
+                size_bytes: 0,
+                version,
+                os: target_os,
+                arch: target_arch,
+                error: Some(e),
+            });
+        }
+    };
+
+    // 3. 下载预编译压缩包
     let response = client
         .get(&download_url)
         .send()
@@ -490,7 +565,23 @@ async fn download_and_extract_core(
         .await
         .map_err(|e| format!("读取下载数据流失败: {}", e))?;
 
-    // 2. 解压归档包
+    // 4. 计算并校验 SHA-256 哈希
+    use sha2::Digest;
+    let actual_hash = format!("{:x}", sha2::Sha256::digest(&bytes));
+    if actual_hash != expected_hash {
+        return Ok(DownloadCoreResult {
+            success: false,
+            exe_path: String::new(),
+            target_dir: target_dir.clone(),
+            size_bytes: 0,
+            version,
+            os: target_os,
+            arch: target_arch,
+            error: Some("官方安装包 SHA-256 校验和不匹配，已拒绝安装".to_string()),
+        });
+    }
+
+    // 5. 解压归档包
     let is_zip = download_url.ends_with(".zip") || bytes.starts_with(b"PK");
 
     if is_zip {
@@ -648,4 +739,27 @@ pub fn run() {
                 });
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_official_download_url_rejects_non_official() {
+        assert!(validate_official_download_url("http://malicious.com/frp.zip").is_err());
+        assert!(validate_official_download_url("https://github.com/evil/frp/releases/download/v0.61.1/frp.zip").is_err());
+        assert!(validate_official_download_url("https://github.com/fatedier/frp/releases/download/").is_err());
+        assert!(validate_official_download_url("https://github.com/fatedier/frp/releases/download/v0.61.1/").is_err());
+    }
+
+    #[test]
+    fn test_validate_official_download_url_accepts_valid() {
+        let (tag, asset) = validate_official_download_url(
+            "https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_windows_amd64.zip",
+        )
+        .unwrap();
+        assert_eq!(tag, "v0.61.1");
+        assert_eq!(asset, "frp_0.61.1_windows_amd64.zip");
+    }
 }

@@ -5,7 +5,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -132,6 +132,10 @@ pub fn validate_frpc_file_name(path: &Path) -> Result<(), String> {
     }
 }
 
+static RE_VERSION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)(?:^|\s)v?(\d+\.\d+\.\d+)(?:\s|$)").expect("合法版本正则")
+});
+
 pub fn parse_frpc_version_output(stdout: &str, stderr: &str) -> Result<String, String> {
     let stdout_lower = stdout.to_lowercase();
     let stderr_lower = stderr.to_lowercase();
@@ -141,9 +145,8 @@ pub fn parse_frpc_version_output(stdout: &str, stderr: &str) -> Result<String, S
     }
 
     let combined = format!("{} {}", stdout, stderr);
-    let matched = Regex::new(r"(?m)(?:^|\s)v?(\d+\.\d+\.\d+)(?:\s|$)")
-        .ok()
-        .and_then(|re| re.captures(&combined))
+    let matched = RE_VERSION
+        .captures(&combined)
         .and_then(|caps| caps.get(1).map(|value| value.as_str().to_string()));
     matched
         .map(|version| format!("v{}", version))
@@ -241,6 +244,26 @@ pub fn strip_ansi_escape_sequences(text: &str) -> String {
     output
 }
 
+static RE_PEM: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)-----BEGIN [A-Z0-9_\s\-]+PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9_\s\-]+PRIVATE KEY-----").expect("合法PEM正则")
+});
+
+static RE_AUTH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+|basic\s+)?[^\r\n,;]+").expect("合法Auth正则")
+});
+
+static RE_QUOTED_SECRET: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)((?:token|password|secret_key)\s*[:=]\s*)(?:"[^"]*"|'[^']*')"#).expect("合法QuotedSecret正则")
+});
+
+static RE_UNQUOTED_SECRET: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)((?:token|password|secret_key)\s*[:=]\s*)[^\s,;\r\n"']+"#).expect("合法UnquotedSecret正则")
+});
+
+static RE_STANDARD_FRP_LOG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}) \[(?P<level>[IWEDT])\] (?P<message>.*)$").expect("合法FRP日志前缀正则")
+});
+
 /// 针对运行期日志与错误信息实施纵深防御脱敏与长度截断
 pub fn sanitize_runtime_text(text: &str) -> String {
     if text.is_empty() {
@@ -250,30 +273,14 @@ pub fn sanitize_runtime_text(text: &str) -> String {
     let mut result = strip_ansi_escape_sequences(text);
 
     // 1. 脱敏各类 PEM 私钥块
-    if let Ok(re_pem) = Regex::new(
-        r"(?is)-----BEGIN [A-Z0-9_\s\-]+PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9_\s\-]+PRIVATE KEY-----",
-    ) {
-        result = re_pem.replace_all(&result, "******").to_string();
-    }
+    result = RE_PEM.replace_all(&result, "******").to_string();
 
     // 2. 脱敏 Authorization 标头
-    if let Ok(re_auth) =
-        Regex::new(r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+|basic\s+)?[^\r\n,;]+")
-    {
-        result = re_auth.replace_all(&result, "${1}******").to_string();
-    }
+    result = RE_AUTH.replace_all(&result, "${1}******").to_string();
 
     // 3. 脱敏 token、password、secret_key 键值赋值（兼容双引号、单引号与无引号）
-    if let Ok(re_quoted) =
-        Regex::new(r#"(?i)((?:token|password|secret_key)\s*[:=]\s*)(?:"[^"]*"|'[^']*')"#)
-    {
-        result = re_quoted.replace_all(&result, "${1}******").to_string();
-    }
-    if let Ok(re_unquoted) =
-        Regex::new(r#"(?i)((?:token|password|secret_key)\s*[:=]\s*)[^\s,;\r\n"']+"#)
-    {
-        result = re_unquoted.replace_all(&result, "${1}******").to_string();
-    }
+    result = RE_QUOTED_SECRET.replace_all(&result, "${1}******").to_string();
+    result = RE_UNQUOTED_SECRET.replace_all(&result, "${1}******").to_string();
 
     // 4. 截断至 4 KiB
     if result.len() > MAX_SAFE_RUNTIME_TEXT_LENGTH {
@@ -300,12 +307,8 @@ fn normalize_runtime_log_line(
     raw_line: String,
 ) -> NormalizedRuntimeLogLine {
     let sanitized = sanitize_runtime_text(&raw_line);
-    let pattern = Regex::new(
-        r"^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}) \[(?P<level>[IWEDT])\] (?P<message>.*)$",
-    )
-    .expect("FRP 标准日志前缀正则必须有效");
 
-    let Some(captures) = pattern.captures(&sanitized) else {
+    let Some(captures) = RE_STANDARD_FRP_LOG.captures(&sanitized) else {
         return NormalizedRuntimeLogLine {
             timestamp: fallback_timestamp,
             level: fallback_level,
@@ -387,13 +390,18 @@ pub enum ProcessControlCommand {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct ProfileStateInner {
+    pub status: String,
+    pub pid: Option<u32>,
+    pub timestamp: u64,
+    pub error_message: Option<String>,
+    pub cmd_sender: Option<mpsc::Sender<ProcessControlCommand>>,
+}
+
 pub struct ProfileProcessHandle {
     pub profile_id: String,
-    pub status: Mutex<String>,
-    pub pid: Mutex<Option<u32>>,
-    pub timestamp: Mutex<u64>,
-    pub error_message: Mutex<Option<String>>,
-    pub cmd_sender: Mutex<Option<mpsc::Sender<ProcessControlCommand>>>,
+    pub inner: Mutex<ProfileStateInner>,
     pub stop_requested: AtomicBool,
     pub runtime_logs: Mutex<VecDeque<FrpcRuntimeLogEvent>>,
     pub next_log_sequence: AtomicU64,
@@ -403,11 +411,13 @@ impl ProfileProcessHandle {
     pub fn new(profile_id: String) -> Self {
         Self {
             profile_id,
-            status: Mutex::new(STATUS_STOPPED.to_string()),
-            pid: Mutex::new(None),
-            timestamp: Mutex::new(Utc::now().timestamp_millis() as u64),
-            error_message: Mutex::new(None),
-            cmd_sender: Mutex::new(None),
+            inner: Mutex::new(ProfileStateInner {
+                status: STATUS_STOPPED.to_string(),
+                pid: None,
+                timestamp: Utc::now().timestamp_millis() as u64,
+                error_message: None,
+                cmd_sender: None,
+            }),
             stop_requested: AtomicBool::new(false),
             runtime_logs: Mutex::new(VecDeque::new()),
             next_log_sequence: AtomicU64::new(0),
@@ -424,17 +434,13 @@ impl ProfileProcessHandle {
     }
 
     pub async fn to_state_event(&self) -> FrpcRuntimeStateEvent {
-        let status = self.status.lock().await.clone();
-        let pid = *self.pid.lock().await;
-        let timestamp = *self.timestamp.lock().await;
-        let error_message = self.error_message.lock().await.clone();
-
+        let inner = self.inner.lock().await;
         FrpcRuntimeStateEvent {
             profile_id: self.profile_id.clone(),
-            status,
-            pid,
-            timestamp,
-            error_message,
+            status: inner.status.clone(),
+            pid: inner.pid,
+            timestamp: inner.timestamp,
+            error_message: inner.error_message.clone(),
         }
     }
 
@@ -444,10 +450,37 @@ impl ProfileProcessHandle {
         pid: Option<u32>,
         error_message: Option<String>,
     ) {
-        *self.status.lock().await = status.to_string();
-        *self.pid.lock().await = pid;
-        *self.error_message.lock().await = error_message;
-        *self.timestamp.lock().await = Utc::now().timestamp_millis() as u64;
+        let mut inner = self.inner.lock().await;
+        inner.status = status.to_string();
+        inner.pid = pid;
+        inner.error_message = error_message;
+        inner.timestamp = Utc::now().timestamp_millis() as u64;
+    }
+
+    pub async fn get_status(&self) -> String {
+        self.inner.lock().await.status.clone()
+    }
+
+    pub async fn get_pid(&self) -> Option<u32> {
+        self.inner.lock().await.pid
+    }
+
+    pub async fn set_pid(&self, pid: Option<u32>) {
+        self.inner.lock().await.pid = pid;
+    }
+
+    pub async fn get_cmd_sender(&self) -> Option<mpsc::Sender<ProcessControlCommand>> {
+        self.inner.lock().await.cmd_sender.clone()
+    }
+
+    pub async fn set_cmd_sender(&self, sender: Option<mpsc::Sender<ProcessControlCommand>>) {
+        self.inner.lock().await.cmd_sender = sender;
+    }
+
+    pub async fn set_stopping(&self) {
+        let mut inner = self.inner.lock().await;
+        inner.status = STATUS_STOPPING.to_string();
+        inner.timestamp = Utc::now().timestamp_millis() as u64;
     }
 }
 
@@ -559,8 +592,10 @@ impl FrpcRuntimeManager {
         let handle = {
             let mut reg = self.registry.lock().await;
             if let Some(existing) = reg.get(&profile_id) {
-                let status = existing.status.lock().await.clone();
-                let has_active_channel = existing.cmd_sender.lock().await.is_some();
+                let (status, has_active_channel) = {
+                    let inner = existing.inner.lock().await;
+                    (inner.status.clone(), inner.cmd_sender.is_some())
+                };
 
                 // 即使 status 处于 error，只要旧进程控制通道仍活跃（未确认退出），绝不允许重复启动
                 if status == STATUS_STARTING || status == STATUS_RUNNING || has_active_channel {
@@ -664,9 +699,7 @@ impl FrpcRuntimeManager {
         };
 
         let pid = child.id().unwrap_or(0);
-        {
-            *handle.pid.lock().await = Some(pid);
-        }
+        handle.set_pid(Some(pid)).await;
 
         // 7. 立即接管 stdout/stderr 管道并在 800ms 存活确认前开始流式读取与脱敏转发
         let stdout = child.stdout.take();
@@ -733,7 +766,7 @@ impl FrpcRuntimeManager {
                 handle
                     .update_state(STATUS_ERROR, None, Some(err_msg.clone()))
                     .await;
-                *handle.cmd_sender.lock().await = None;
+                handle.set_cmd_sender(None).await;
 
                 let err_event = handle.to_state_event().await;
                 if let Some(ref sink) = event_sink {
@@ -758,9 +791,7 @@ impl FrpcRuntimeManager {
 
                 // 构建无死锁 Actor 监控通道，Child 完全由独立协程持有，零锁占用 wait()
                 let (cmd_tx, cmd_rx) = mpsc::channel::<ProcessControlCommand>(8);
-                {
-                    *handle.cmd_sender.lock().await = Some(cmd_tx);
-                }
+                handle.set_cmd_sender(Some(cmd_tx)).await;
 
                 let handle_clone = handle.clone();
                 let sink_clone = event_sink.clone();
@@ -792,7 +823,7 @@ impl FrpcRuntimeManager {
                 exit_res = child.wait() => {
                     let _ = exit_res;
                     let was_stop_requested = handle.stop_requested.load(Ordering::SeqCst);
-                    let current_status = handle.status.lock().await.clone();
+                    let current_status = handle.get_status().await;
 
                     if was_stop_requested || current_status == STATUS_STOPPING {
                         // 主动停止最终得到确认
@@ -803,7 +834,7 @@ impl FrpcRuntimeManager {
                     }
 
                     // 进程确实死亡，唯有在此处释放控制通道和 PID
-                    *handle.cmd_sender.lock().await = None;
+                    handle.set_cmd_sender(None).await;
 
                     let state_event = handle.to_state_event().await;
                     if let Some(ref sink) = event_sink {
@@ -827,7 +858,7 @@ impl FrpcRuntimeManager {
                                         Ok(Ok(_)) => {
                                             // 监控器确认进程已真正退出，落为 stopped 并释放控制权
                                             handle.update_state(STATUS_STOPPED, None, None).await;
-                                            *handle.cmd_sender.lock().await = None;
+                                            handle.set_cmd_sender(None).await;
 
                                             let stopped_event = handle.to_state_event().await;
                                             if let Some(ref sink) = event_sink {
@@ -838,7 +869,8 @@ impl FrpcRuntimeManager {
                                         }
                                         Ok(Err(_)) => {
                                             // wait() 调用异常，但子进程可能仍活着！保留 Child 与控制通道
-                                            handle.update_state(STATUS_ERROR, *handle.pid.lock().await, Some(ERR_STOP_FAILED.to_string())).await;
+                                            let pid = handle.get_pid().await;
+                                            handle.update_state(STATUS_ERROR, pid, Some(ERR_STOP_FAILED.to_string())).await;
                                             let error_event = handle.to_state_event().await;
                                             if let Some(ref sink) = event_sink {
                                                 sink.emit_state(&error_event);
@@ -848,7 +880,8 @@ impl FrpcRuntimeManager {
                                         }
                                         Err(_) => {
                                             // 超时未退出：子进程极可能仍然存活！绝不写 stopped，保留 Child 监管
-                                            handle.update_state(STATUS_ERROR, *handle.pid.lock().await, Some(ERR_STOP_TIMEOUT.to_string())).await;
+                                            let pid = handle.get_pid().await;
+                                            handle.update_state(STATUS_ERROR, pid, Some(ERR_STOP_TIMEOUT.to_string())).await;
                                             let error_event = handle.to_state_event().await;
                                             if let Some(ref sink) = event_sink {
                                                 sink.emit_state(&error_event);
@@ -860,7 +893,8 @@ impl FrpcRuntimeManager {
                                 }
                                 Err(_) => {
                                     // kill 失败：子进程仍存活！绝不写 stopped，保留控制通道供重试
-                                    handle.update_state(STATUS_ERROR, *handle.pid.lock().await, Some(ERR_STOP_FAILED.to_string())).await;
+                                    let pid = handle.get_pid().await;
+                                    handle.update_state(STATUS_ERROR, pid, Some(ERR_STOP_FAILED.to_string())).await;
                                     let error_event = handle.to_state_event().await;
                                     if let Some(ref sink) = event_sink {
                                         sink.emit_state(&error_event);
@@ -912,10 +946,9 @@ impl FrpcRuntimeManager {
             }
         };
 
-        let current_status = handle.status.lock().await.clone();
-        let cmd_sender = {
-            let lock = handle.cmd_sender.lock().await;
-            lock.clone()
+        let (current_status, cmd_sender) = {
+            let inner = handle.inner.lock().await;
+            (inner.status.clone(), inner.cmd_sender.clone())
         };
 
         // 若已是 stopped 且无有效控制通道，直接拒绝
@@ -941,10 +974,7 @@ impl FrpcRuntimeManager {
         };
 
         // 设置为 stopping 并广播
-        {
-            *handle.status.lock().await = STATUS_STOPPING.to_string();
-            *handle.timestamp.lock().await = Utc::now().timestamp_millis() as u64;
-        }
+        handle.set_stopping().await;
         let stopping_event = handle.to_state_event().await;
         if let Some(ref sink) = event_sink {
             sink.emit_state(&stopping_event);
@@ -961,7 +991,7 @@ impl FrpcRuntimeManager {
             handle
                 .update_state(STATUS_ERROR, None, Some(ERR_STOP_FAILED.to_string()))
                 .await;
-            *handle.cmd_sender.lock().await = None;
+            handle.set_cmd_sender(None).await;
 
             let err_event = handle.to_state_event().await;
             if let Some(ref sink) = event_sink {
@@ -1035,10 +1065,7 @@ impl FrpcRuntimeManager {
         let mut join_set = tokio::task::JoinSet::new();
 
         for handle in handles {
-            let cmd_sender = {
-                let lock = handle.cmd_sender.lock().await;
-                lock.clone()
-            };
+            let cmd_sender = handle.get_cmd_sender().await;
 
             if let Some(tx) = cmd_sender {
                 let p_id = handle.profile_id.clone();
@@ -1084,7 +1111,7 @@ impl FrpcRuntimeManager {
 
         // 2. 释放 registry 锁后，逐个异步可靠地更新为 error 状态并保留 PID 与控制权
         for handle in unconfirmed_handles {
-            let current_pid = *handle.pid.lock().await;
+            let current_pid = handle.get_pid().await;
             handle
                 .update_state(
                     STATUS_ERROR,
@@ -1328,7 +1355,7 @@ pub mod tests {
         let manager = FrpcRuntimeManager::new(temp_dir);
 
         let handle = Arc::new(ProfileProcessHandle::new("profile_1".to_string()));
-        *handle.status.lock().await = STATUS_RUNNING.to_string();
+        handle.update_state(STATUS_RUNNING, None, None).await;
         manager
             .registry
             .lock()
@@ -1354,9 +1381,9 @@ pub mod tests {
 
         let handle = Arc::new(ProfileProcessHandle::new("profile_err".to_string()));
         // 状态为 error，但是旧控制通道依然存在（说明底层进程尚未退出确认）
-        *handle.status.lock().await = STATUS_ERROR.to_string();
+        handle.update_state(STATUS_ERROR, None, None).await;
         let (tx, _rx) = mpsc::channel(1);
-        *handle.cmd_sender.lock().await = Some(tx);
+        handle.set_cmd_sender(Some(tx)).await;
         manager
             .registry
             .lock()
@@ -1403,9 +1430,8 @@ pub mod tests {
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
 
         let handle = Arc::new(ProfileProcessHandle::new("test_stop_deadlock".to_string()));
-        *handle.status.lock().await = STATUS_RUNNING.to_string();
-        *handle.pid.lock().await = child.id();
-        *handle.cmd_sender.lock().await = Some(cmd_tx.clone());
+        handle.update_state(STATUS_RUNNING, child.id(), None).await;
+        handle.set_cmd_sender(Some(cmd_tx.clone())).await;
 
         let handle_clone = handle.clone();
         tokio::spawn(async move {
@@ -1427,9 +1453,9 @@ pub mod tests {
         assert!(inner_res.unwrap().is_ok());
 
         // 验证状态最终由监控器正确落定为 stopped，且通道被释放
-        let final_status = handle.status.lock().await.clone();
+        let final_status = handle.get_status().await;
         assert_eq!(final_status, STATUS_STOPPED);
-        assert!(handle.cmd_sender.lock().await.is_none());
+        assert!(handle.get_cmd_sender().await.is_none());
     }
 
     #[tokio::test]
@@ -1474,7 +1500,7 @@ pub mod tests {
         assert_eq!(res.failure_kind, Some(FAILURE_EARLY_EXIT.to_string()));
 
         // 2. 状态断言：最终为 error，绝不产生 running
-        let final_status = handle.status.lock().await.clone();
+        let final_status = handle.get_status().await;
         assert_eq!(final_status, STATUS_ERROR);
 
         // 3. 事件 Sink 断言：真实捕获 stderr 输出，且完成 Token 脱敏
@@ -1556,9 +1582,8 @@ pub mod tests {
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
 
         let handle = Arc::new(ProfileProcessHandle::new("shutdown_p1".to_string()));
-        *handle.status.lock().await = STATUS_RUNNING.to_string();
-        *handle.pid.lock().await = child.id();
-        *handle.cmd_sender.lock().await = Some(cmd_tx);
+        handle.update_state(STATUS_RUNNING, child.id(), None).await;
+        handle.set_cmd_sender(Some(cmd_tx)).await;
 
         let handle_clone = handle.clone();
         tokio::spawn(async move {
@@ -1645,5 +1670,55 @@ pub mod tests {
             .unwrap();
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].profile_id, "first");
+    }
+
+    #[test]
+    fn test_lazylock_regex_performance_and_correctness() {
+        let pem_log = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----";
+        let auth_log = "Authorization: Bearer my-secret-jwt-token";
+        let token_log = "token = \"top_secret_123\" and password = 'pwd' and secret_key = abc";
+        let standard_log = "2026-09-05 22:00:00.123 [I] [service.go:123] login to server success";
+
+        for _ in 0..1000 {
+            let s_pem = sanitize_runtime_text(pem_log);
+            assert_eq!(s_pem, "******");
+
+            let s_auth = sanitize_runtime_text(auth_log);
+            assert_eq!(s_auth, "Authorization: ******");
+
+            let s_token = sanitize_runtime_text(token_log);
+            assert_eq!(s_token, "token = ****** and password = ****** and secret_key = ******");
+
+            let norm = normalize_runtime_log_line(
+                "fallback".to_string(),
+                "info".to_string(),
+                standard_log.to_string(),
+            );
+            assert_eq!(norm.timestamp, "2026-09-05 22:00:00.123");
+            assert_eq!(norm.level, "info");
+            assert_eq!(norm.message, "[service.go:123] login to server success");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_profile_handle_atomic_state_consistency() {
+        let handle = Arc::new(ProfileProcessHandle::new("atomic_profile".to_string()));
+        let initial_event = handle.to_state_event().await;
+        assert_eq!(initial_event.status, STATUS_STOPPED);
+        assert_eq!(initial_event.pid, None);
+
+        // 更新为 running
+        handle.update_state(STATUS_RUNNING, Some(12345), None).await;
+        let running_event = handle.to_state_event().await;
+        assert_eq!(running_event.status, STATUS_RUNNING);
+        assert_eq!(running_event.pid, Some(12345));
+        assert!(running_event.timestamp >= initial_event.timestamp);
+
+        // 更新为 error
+        handle.update_state(STATUS_ERROR, None, Some("出错了".to_string())).await;
+        let error_event = handle.to_state_event().await;
+        assert_eq!(error_event.status, STATUS_ERROR);
+        assert_eq!(error_event.pid, None);
+        assert_eq!(error_event.error_message, Some("出错了".to_string()));
     }
 }
