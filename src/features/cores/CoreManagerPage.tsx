@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { FrpCore } from '../../types/frp';
+import { CoreDownloadTask, FrpCore } from '../../types/frp';
 import {
   fetchGitHubReleases,
   pickCoreFileNative,
@@ -7,9 +7,11 @@ import {
   isTauriEnv,
   detectHostSystemPlatform,
   matchReleaseAsset,
-  getAcceleratedDownloadUrl,
   pickDirectoryNative,
-  downloadAndExtractCore,
+  startCoreDownload,
+  listCoreDownloadTasks,
+  subscribeCoreDownloadProgress,
+  scanLocalFrpcCores,
   HostPlatformInfo,
   MatchedAssetResult,
 } from '../../services/ipc';
@@ -24,14 +26,17 @@ import {
   FeishuActionLink,
   FEISHU_FONT_FAMILY,
 } from '../../components/ui/feishu-table';
+import { FeishuEmptyState } from '../../components/ui/feishu-table/FeishuEmptyState';
 import { PluginIcon, DownloadIcon } from '../../components/icons';
+import { CoreCard } from './CoreCard';
+import { CoreAvailability, deriveCoreReleaseRows } from './core-version-library';
+import { cn } from '../../lib/utils';
 import {
   Folder,
   RefreshCw,
   ExternalLink,
   ShieldCheck,
   Plus,
-  Cpu,
   FolderOpen,
   Download,
   AlertCircle,
@@ -43,8 +48,13 @@ import {
   Trash2,
   Edit3,
   Zap,
+  LayoutGrid,
+  Table as TableIcon,
+  Link2,
+  Search,
 } from 'lucide-react';
 import { feishuToast } from '../../components/ui/FeishuToast';
+import { FeishuTooltip } from '../../components/ui/tooltip';
 
 interface CoreManagerPageProps {
   cores: FrpCore[];
@@ -55,9 +65,7 @@ interface CoreManagerPageProps {
   onDeleteCore?: (coreId: string) => void;
 }
 
-type CoreTabKey = 'all' | 'installed' | 'online' | 'custom';
-
-interface UnifiedCoreRow {
+export interface UnifiedCoreRow {
   id: string;
   name: string;
   version: string;
@@ -69,6 +77,10 @@ interface UnifiedCoreRow {
   sizeDisplay: string;
   sizeBytes?: number;
   status: 'active' | 'installed' | 'online';
+  availability?: CoreAvailability;
+  task?: import('../../types/frp').CoreDownloadTask;
+  downloadCount?: number;
+  downloadCountDisplay: string;
   publishedAt?: string;
   isDefault: boolean;
   isCustom: boolean;
@@ -84,7 +96,6 @@ interface EditModalState {
   os: string;
   arch: string;
   sizeBytes: number;
-  setAsDefault: boolean;
   isCustom: boolean;
   downloadDate?: string;
 }
@@ -101,8 +112,8 @@ interface DownloadModalState {
   targetArch: string;
   targetDir: string;
   matchedAsset: MatchedAssetResult | null;
-  downloadAsDefault: boolean;
   isDownloading: boolean;
+  taskId?: string;
 }
 
 const PLATFORM_PRESETS = [
@@ -129,8 +140,20 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
   onDeleteCore,
 }) => {
   const [onlineReleases, setOnlineReleases] = useState<any[]>([]);
+  const [downloadTasks, setDownloadTasks] = useState<CoreDownloadTask[]>([]);
   const [loadingReleases, setLoadingReleases] = useState(false);
-  const [activeTab, setActiveTab] = useState<CoreTabKey>('all');
+
+  // 视图模式：卡片视图 (card) 或 表格视图 (table)，持久化用户偏好
+  const [viewMode, setViewMode] = useState<'card' | 'table'>(() => {
+    return (localStorage.getItem('frp_gui_core_view_mode') as 'card' | 'table') || 'table';
+  });
+
+  const handleSetViewMode = (mode: 'card' | 'table') => {
+    setViewMode(mode);
+    localStorage.setItem('frp_gui_core_view_mode', mode);
+  };
+
+  const [searchKeyword, setSearchKeyword] = useState<string>('');
 
   // 用户偏好的镜像源持久化
   const [selectedMirror, setSelectedMirror] = useState<string>(() => {
@@ -162,9 +185,23 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
     targetArch: 'amd64',
     targetDir: '',
     matchedAsset: null,
-    downloadAsDefault: true,
     isDownloading: false,
   });
+  const activeDownloadTask = downloadModal.taskId
+    ? downloadTasks.find((task) => task.taskId === downloadModal.taskId)
+    : undefined;
+  const activeDownloadProgress = (() => {
+    if (!activeDownloadTask) return 0;
+    if (activeDownloadTask.phase === 'downloading' && activeDownloadTask.totalBytes) {
+      return Math.min(85, Math.round(activeDownloadTask.receivedBytes / activeDownloadTask.totalBytes * 85));
+    }
+    if (activeDownloadTask.phase === 'verifying') return 85;
+    if (activeDownloadTask.phase === 'extracting' && activeDownloadTask.totalEntries) {
+      return 90 + Math.round((activeDownloadTask.extractedEntries || 0) / activeDownloadTask.totalEntries * 9);
+    }
+    if (activeDownloadTask.phase === 'inspecting') return 99;
+    return activeDownloadTask.phase === 'completed' ? 100 : 0;
+  })();
 
   // 更改核心模态窗
   const [editModal, setEditModal] = useState<EditModalState>({
@@ -176,7 +213,6 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
     os: 'windows',
     arch: 'amd64',
     sizeBytes: 16500000,
-    setAsDefault: false,
     isCustom: false,
   });
 
@@ -195,6 +231,74 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
     loadReleases();
     initHostPlatform();
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const synchronizeCompletedTask = (task: CoreDownloadTask) => {
+      if (task.phase !== 'completed' || !task.installation || !active) return;
+      if (cores.some((core) => core.path.toLowerCase() === task.installation!.path.toLowerCase())) return;
+      const core: FrpCore = {
+        id: `core_${task.taskId}`,
+        name: `官方 Release ${task.releaseTag}`,
+        version: task.installation.version,
+        os: task.installation.os as FrpCore['os'],
+        arch: task.installation.arch as FrpCore['arch'],
+        path: task.installation.path,
+        isDefault: false,
+        isCustom: false,
+        status: 'ready',
+        sizeBytes: task.installation.sizeBytes,
+        downloadDate: new Date().toLocaleDateString(),
+      };
+      onAddCustomCore(core);
+    };
+    void listCoreDownloadTasks().then((tasks) => {
+      if (!active) return;
+      setDownloadTasks(tasks);
+      tasks.forEach(synchronizeCompletedTask);
+    });
+    let stop: (() => void) | undefined;
+    void subscribeCoreDownloadProgress((task) => {
+      if (!active) return;
+      setDownloadTasks((tasks) => [...tasks.filter((item) => item.taskId !== task.taskId), task]);
+      setDownloadModal((modal) => modal.taskId === task.taskId
+        ? { ...modal, isDownloading: ['downloading', 'verifying', 'extracting', 'inspecting'].includes(task.phase) }
+        : modal);
+      synchronizeCompletedTask(task);
+    }).then((unlisten) => { stop = unlisten; });
+    return () => { active = false; stop?.(); };
+  }, [cores, onAddCustomCore]);
+
+  useEffect(() => {
+    if (!downloadModal.taskId || !downloadModal.isDownloading) return;
+    let active = true;
+    const synchronizeTaskSnapshot = async () => {
+      const task = (await listCoreDownloadTasks()).find((item) => item.taskId === downloadModal.taskId);
+      if (!active || !task) return;
+      setDownloadTasks((tasks) => [...tasks.filter((item) => item.taskId !== task.taskId), task]);
+      setDownloadModal((modal) => modal.taskId === task.taskId
+        ? { ...modal, isDownloading: ['downloading', 'verifying', 'extracting', 'inspecting'].includes(task.phase) }
+        : modal);
+      if (task.phase === 'completed' && task.installation && !cores.some((core) => core.path.toLowerCase() === task.installation!.path.toLowerCase())) {
+        onAddCustomCore({
+          id: `core_${task.taskId}`,
+          name: `FRP ${task.installation.version}`,
+          version: task.installation.version,
+          os: task.installation.os,
+          arch: task.installation.arch,
+          path: task.installation.path,
+          isDefault: false,
+          isCustom: false,
+          status: 'ready',
+          sizeBytes: task.installation.sizeBytes,
+          downloadDate: new Date().toLocaleDateString(),
+        });
+      }
+    };
+    void synchronizeTaskSnapshot();
+    const timer = window.setInterval(() => void synchronizeTaskSnapshot(), 500);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [downloadModal.isDownloading, downloadModal.taskId, cores, onAddCustomCore]);
 
   const handleUpdateMirror = (val: string) => {
     setSelectedMirror(val);
@@ -245,19 +349,63 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
     const fileName = selectedPath.replace(/[\\/]/g, '/').split('/').pop() || 'frpc.exe';
     const newCore: FrpCore = {
       id: `custom_${Date.now()}`,
-      name: `本地核心 (${fileName})`,
+      name: `FRP ${inspected.version}`,
       version: inspected.version,
       arch: hostPlatform.arch,
       os: hostPlatform.os,
       path: selectedPath,
-      isDefault: true,
+      isDefault: false,
       isCustom: true,
       downloadDate: new Date().toLocaleDateString(),
       status: 'ready',
     };
     onAddCustomCore(newCore);
-    onSelectCore(newCore.id);
     feishuToast.success(`已导入可用 FRPC 核心: ${fileName} (${inspected.version})`);
+  };
+
+  const handleImportLocalDirectory = async () => {
+    if (!isTauriEnv()) {
+      feishuToast.warning('浏览器预览不能扫描本机 FRP 文件夹，请在 FRP-GUI 桌面端导入核心');
+      return;
+    }
+
+    const selectedDirectory = await pickDirectoryNative();
+    if (!selectedDirectory) return;
+
+    const result = await scanLocalFrpcCores(selectedDirectory);
+    if (result.error) {
+      feishuToast.error(result.error);
+      return;
+    }
+
+    const existingPaths = new Set(cores.map((core) => core.path.toLowerCase()));
+    let addedCount = 0;
+    for (const recognized of result.recognized) {
+      const normalizedPath = recognized.path.toLowerCase();
+      if (existingPaths.has(normalizedPath)) continue;
+      existingPaths.add(normalizedPath);
+      const coreId = `custom_${Date.now()}_${addedCount}`;
+      onAddCustomCore({
+        id: coreId,
+        name: `FRP ${recognized.version}`,
+        version: recognized.version,
+        arch: recognized.arch,
+        os: recognized.os,
+        path: recognized.path,
+        isDefault: false,
+        isCustom: true,
+        downloadDate: new Date().toLocaleDateString(),
+        status: 'ready',
+        sizeBytes: recognized.sizeBytes,
+      });
+      addedCount += 1;
+    }
+
+    if (result.recognized.length === 0) {
+      feishuToast.warning(result.skipped.length > 0 ? `未识别到可用 FRPC 核心，跳过 ${result.skipped.length} 项` : '所选目录中未找到 frpc 或 frpc.exe');
+      return;
+    }
+    feishuToast.success(`已识别 ${result.recognized.length} 个可用 FRPC 核心，跳过 ${result.skipped.length} 项`);
   };
 
   // 打开编辑核心模态窗
@@ -271,7 +419,6 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
       os: record.os || (record.platform.toLowerCase().includes('windows') ? 'windows' : record.platform.toLowerCase().includes('mac') ? 'darwin' : 'linux'),
       arch: record.arch || (record.platform.toLowerCase().includes('arm64') ? 'arm64' : 'amd64'),
       sizeBytes: record.sizeBytes || 16500000,
-      setAsDefault: record.id === activeCoreId,
       isCustom: record.isCustom,
       downloadDate: record.publishedAt,
     });
@@ -327,7 +474,7 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
       path: trimmedPath,
       os: editModal.os as any,
       arch: editModal.arch as any,
-      isDefault: editModal.setAsDefault,
+      isDefault: false,
       isCustom: editModal.isCustom,
       status: 'ready',
       sizeBytes: editModal.sizeBytes,
@@ -336,9 +483,6 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
 
     if (onUpdateCore) {
       onUpdateCore(updated);
-    }
-    if (editModal.setAsDefault) {
-      onSelectCore(updated.id);
     }
 
     feishuToast.success(`已保存 FRPC 核心配置: ${updated.name} (${updated.version})`);
@@ -389,30 +533,9 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
       targetArch: hostPlatform.arch,
       targetDir: defaultDir,
       matchedAsset: matched,
-      downloadAsDefault: true,
       isDownloading: false,
+      taskId: undefined,
     });
-  };
-
-  // 切换目标系统/架构
-  const handleChangeTargetPlatform = (presetKey: string) => {
-    const preset = PLATFORM_PRESETS.find((p) => p.value === presetKey);
-    if (!preset || !downloadModal.release) return;
-
-    const matched = matchReleaseAsset(downloadModal.release.assets, preset.os, preset.arch, downloadModal.release.tag);
-    const isWin = preset.os === 'windows';
-    const baseDir = lastDownloadDir.replace(/[\\/]+$/, '');
-    const defaultDir = isWin
-      ? `${baseDir}\\frp_${downloadModal.release.tag}_${preset.os}_${preset.arch}`
-      : `${baseDir}/frp_${downloadModal.release.tag}`;
-
-    setDownloadModal((prev) => ({
-      ...prev,
-      targetOs: preset.os,
-      targetArch: preset.arch,
-      targetDir: defaultDir,
-      matchedAsset: matched,
-    }));
   };
 
   // 确认真实下载并解压安装到指定磁盘目录
@@ -427,11 +550,6 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
 
     setDownloadModal((prev) => ({ ...prev, isDownloading: true }));
 
-    const rawDownloadUrl =
-      downloadModal.matchedAsset?.downloadUrl ||
-      `https://github.com/fatedier/frp/releases/download/${release.tag}/frp_${release.tag.replace(/^v/, '')}_${downloadModal.targetOs}_${downloadModal.targetArch}.${downloadModal.targetOs === 'windows' ? 'zip' : 'tar.gz'}`;
-    const effectiveUrl = getAcceleratedDownloadUrl(rawDownloadUrl, selectedMirror);
-
     const assetName = downloadModal.matchedAsset?.assetName || `frp_${release.tag}_${downloadModal.targetOs}_${downloadModal.targetArch}.zip`;
 
     // 记住用户选择的根目录
@@ -442,58 +560,46 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
 
     feishuToast.info(`正在连接 ${selectedMirror === 'ghproxy' ? '国内加速镜像' : '下载源'} 下载 [${assetName}]...`);
 
-    try {
-      const result = await downloadAndExtractCore({
-        downloadUrl: effectiveUrl,
-        targetDir: downloadModal.targetDir.trim(),
-        version: release.tag,
-        targetOs: downloadModal.targetOs,
-        targetArch: downloadModal.targetArch,
-      });
-
-      if (!result.success) {
-        feishuToast.error(`下载解压失败: ${result.error || '未知网络或文件系统错误'}`);
-        setDownloadModal((prev) => ({ ...prev, isDownloading: false }));
-        return;
-      }
-
-      const downloadedCore: FrpCore = {
-        id: `core_${release.tag}_${downloadModal.targetOs}_${downloadModal.targetArch}_${Date.now()}`,
-        name: `官方 Release ${release.tag}`,
-        version: release.tag,
-        arch: downloadModal.targetArch as any,
-        os: downloadModal.targetOs as any,
-        path: result.exePath,
-        isDefault: downloadModal.downloadAsDefault,
-        isCustom: false,
-        downloadDate: new Date().toLocaleDateString(),
-        status: 'ready',
-        sizeBytes: result.sizeBytes || 16500000,
-      };
-
-      onAddCustomCore(downloadedCore);
-      if (downloadModal.downloadAsDefault) {
-        onSelectCore(downloadedCore.id);
-      }
-
-      setDownloadModal((prev) => ({ ...prev, isDownloading: false, isOpen: false }));
-      feishuToast.success(
-        `FRP ${release.tag} 核心已真实下载解压就绪: ${result.exePath} (${(result.sizeBytes / 1024 / 1024).toFixed(1)} MB)`
-      );
-    } catch (err: any) {
-      feishuToast.error(`下载流程发生异常: ${err.message || String(err)}`);
+    const task = await startCoreDownload({
+      releaseTag: release.tag,
+      assetName,
+      mirror: selectedMirror as 'official' | 'ghproxy' | 'fastgit',
+      targetDir: downloadModal.targetDir.trim(),
+      targetOs: downloadModal.targetOs,
+      targetArch: downloadModal.targetArch,
+    });
+    if (!('taskId' in task)) {
+      feishuToast.error(`下载任务启动失败: ${task.error}`);
       setDownloadModal((prev) => ({ ...prev, isDownloading: false }));
+      return;
     }
+    setDownloadTasks((tasks) => [...tasks.filter((item) => item.taskId !== task.taskId), task]);
+    setDownloadModal((prev) => ({ ...prev, isDownloading: true, taskId: task.taskId }));
+    feishuToast.success(`已创建 FRP ${release.tag} 下载任务，将依次下载、校验、解压并验真`);
+  };
+
+  // 复制下载链接
+  const handleCopyDownloadLink = (record: UnifiedCoreRow) => {
+    const rawAsset = record.rawRelease?.assets?.[0];
+    const downloadUrl =
+      rawAsset?.downloadUrl ||
+      `https://github.com/fatedier/frp/releases/download/${record.version}/frp_${record.version.replace(/^v/, '')}_windows_amd64.zip`;
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(downloadUrl).catch(() => {});
+    }
+    feishuToast.success(`已复制下载链接: ${downloadUrl}`);
   };
 
   // 统一构建多维表格数据源
   const unifiedData = useMemo<UnifiedCoreRow[]>(() => {
-    const list: UnifiedCoreRow[] = [];
+    const formatDownloadCount = (count?: number) => {
+      if (typeof count !== 'number' || count <= 0) return '—';
+      return count.toLocaleString();
+    };
 
-    // 1. 本地核心 (展示用户实际下载或绑定的核心)
-    cores.forEach((core) => {
+    const toLocalOnlyRow = (core: FrpCore): UnifiedCoreRow => {
       const isActive = core.id === activeCoreId;
-      list.push({
+      return {
         id: core.id,
         name: core.name,
         version: core.version,
@@ -505,195 +611,201 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
         sizeDisplay: core.sizeBytes ? `${(core.sizeBytes / 1024 / 1024).toFixed(1)} MB` : '本地就绪',
         sizeBytes: core.sizeBytes,
         status: isActive ? 'active' : 'installed',
+        availability: 'downloaded',
+        downloadCountDisplay: '—',
         publishedAt: core.downloadDate || '本地引入',
         isDefault: isActive,
         isCustom: !!core.isCustom,
-      });
+      };
+    };
+
+    // 官方 Release 是唯一版本列表来源；仅把当前电脑 OS/架构相符的已验证 FRPC 合并为“已下载”。
+    const releaseRows = deriveCoreReleaseRows({
+      releases: onlineReleases,
+      cores,
+      host: { os: hostPlatform.os, arch: hostPlatform.arch },
+      tasks: downloadTasks,
+    });
+    const releaseVersions = new Set(onlineReleases.map((release) => release.tag));
+    const list: UnifiedCoreRow[] = releaseRows.map(({ release, installation, availability, task }): UnifiedCoreRow => {
+      const isInstalled = Boolean(installation);
+      const isActive = installation?.id === activeCoreId;
+      const matchedAsset = matchReleaseAsset(release.assets, hostPlatform.os, hostPlatform.arch, release.tag);
+
+      return {
+        id: installation?.id || `online_${release.tag}`,
+        name: installation?.name || release.name || `官方 Release ${release.tag}`,
+        version: release.tag,
+        sourceType: installation?.isCustom ? 'custom_installed' : isInstalled ? 'official_installed' : 'online_release',
+        path: installation?.path || 'GitHub 官方版本库',
+        platform: isInstalled
+          ? `${installation?.os || hostPlatform.os} ${installation?.arch || hostPlatform.arch}`
+          : hostPlatform.platformDisplay,
+        os: installation?.os || hostPlatform.os,
+        arch: installation?.arch || hostPlatform.arch,
+        sizeDisplay: installation?.sizeBytes
+          ? `${(installation.sizeBytes / 1024 / 1024).toFixed(1)} MB`
+          : `${(matchedAsset.sizeBytes / 1024 / 1024).toFixed(1)} MB`,
+        sizeBytes: installation?.sizeBytes || matchedAsset.sizeBytes,
+        status: isActive ? 'active' : isInstalled ? 'installed' : 'online',
+        availability,
+        task,
+        downloadCount: release.downloadCount,
+        downloadCountDisplay: formatDownloadCount(release.downloadCount),
+        publishedAt: release.publishedAt ? release.publishedAt.substring(0, 10) : installation?.downloadDate || '官方发布',
+        isDefault: isActive,
+        isCustom: Boolean(installation?.isCustom),
+        rawRelease: release,
+      };
     });
 
-    // 2. 官方在线 Releases（排除已安装的）
-    onlineReleases.forEach((rel) => {
-      const alreadyInstalled = cores.some((c) => c.version === rel.tag);
-      if (!alreadyInstalled) {
-        list.push({
-          id: `online_${rel.tag}`,
-          name: rel.name || `官方 Release ${rel.tag}`,
-          version: rel.tag,
-          sourceType: 'online_release',
-          path: 'GitHub 官方云端版本库',
-          platform: '跨平台全架构 (Windows/macOS/Linux)',
-          sizeDisplay: rel.assets?.[0]?.size ? `${(rel.assets[0].size / 1024 / 1024).toFixed(1)} MB` : '~16.5 MB',
-          status: 'online',
-          publishedAt: rel.publishedAt ? rel.publishedAt.substring(0, 10) : '官方发布',
-          isDefault: false,
-          isCustom: false,
-          rawRelease: rel,
-        });
-      }
-    });
+    // 保留尚未出现在官方列表中的历史手工导入核心，避免覆盖既有用户配置。
+    cores
+      .filter((core) => !releaseVersions.has(core.version))
+      .forEach((core) => list.push(toLocalOnlyRow(core)));
 
     return list;
-  }, [cores, activeCoreId, onlineReleases]);
+  }, [cores, activeCoreId, downloadTasks, hostPlatform, onlineReleases]);
 
-  // Tab 过滤数据
-  const filteredData = useMemo(() => {
-    return unifiedData.filter((item) => {
-      if (activeTab === 'installed') return item.status === 'active' || item.status === 'installed';
-      if (activeTab === 'online') return item.status === 'online';
-      if (activeTab === 'custom') return item.isCustom;
-      return true;
-    });
-  }, [unifiedData, activeTab]);
+  const filteredData = unifiedData;
+
+  // 卡片搜索过滤数据
+  const cardFilteredData = useMemo(() => {
+    if (!searchKeyword.trim()) return filteredData;
+    const q = searchKeyword.toLowerCase();
+    return filteredData.filter(
+      (item) =>
+        item.name.toLowerCase().includes(q) ||
+        item.version.toLowerCase().includes(q) ||
+        (item.path && item.path.toLowerCase().includes(q)) ||
+        item.platform.toLowerCase().includes(q)
+    );
+  }, [filteredData, searchKeyword]);
 
   // 统计数据
-  const installedCount = useMemo(() => unifiedData.filter((i) => i.status === 'active' || i.status === 'installed').length, [unifiedData]);
-  const onlineCount = useMemo(() => unifiedData.filter((i) => i.status === 'online').length, [unifiedData]);
-  const customCount = useMemo(() => unifiedData.filter((i) => i.isCustom).length, [unifiedData]);
 
-  // 1:1 飞书多维表格列定义（包含更改、删除操作）
+  // 1:1 飞书多维表格列定义（包含更改、删除操作，列宽自适应 100% 容器，操作列固定 170px）
   const columns = useMemo<FeishuColumn<UnifiedCoreRow>[]>(() => [
     {
       key: 'name',
-      title: '核心引擎版本',
-      dataIndex: 'name',
+      title: '版本',
+      dataIndex: 'version',
       dataType: 'text',
-      width: 300,
+      width: 130,
+      minWidth: 120,
       render: (_, record) => {
         const isLatest = record.version === 'v0.61.1';
         return (
-          <div className="flex flex-col justify-center py-0.5">
-            <div className="flex items-center gap-2">
-              <span className="text-[14px] font-normal text-feishu-text-primary truncate">
-                {record.name}
+          <div className="flex items-center gap-2 flex-wrap min-w-0 py-0.5">
+            <FeishuPill
+              variant="purple"
+              showDot={false}
+              className="font-normal text-[13px] h-[22px] px-2.5 text-[#1F2329]"
+            >
+              {record.version}
+            </FeishuPill>
+            {isLatest && (
+              <span className="text-[11px] px-1.5 py-0.5 bg-feishu-blue-light text-feishu-blue rounded font-normal">
+                最新版
               </span>
-              {record.status === 'active' && (
-                <FeishuPill variant="green" showDot={true} className="text-[11px] h-[20px] px-2 font-normal">
-                  当前默认
-                </FeishuPill>
-              )}
-              {isLatest && record.status !== 'active' && (
-                <span className="text-[11px] px-1.5 py-0.5 bg-feishu-blue-light text-feishu-blue rounded font-normal">
-                  最新版
-                </span>
-              )}
-            </div>
-            <span className="text-[12px] text-feishu-text-muted truncate block mt-0.5 font-normal">
-              {record.path || '未指定路径'}
-            </span>
+            )}
           </div>
         );
       },
-    },
-    {
-      key: 'version',
-      title: '版本号',
-      dataIndex: 'version',
-      dataType: 'select',
-      width: 130,
-      render: (version, record) => {
-        let variant: 'orange' | 'blue' | 'purple' = 'blue';
-        if (record.sourceType === 'custom_installed') {
-          variant = 'orange';
-        } else if (record.sourceType === 'online_release') {
-          variant = 'purple';
-        }
-        return (
-          <FeishuPill variant={variant} showDot={false} className="text-[12px] h-[22px] px-2.5 font-normal">
-            {version}
-          </FeishuPill>
-        );
-      },
-    },
-    {
-      key: 'platform',
-      title: '平台架构',
-      dataIndex: 'platform',
-      dataType: 'text',
-      width: 180,
-      render: (platform) => (
-        <span className="text-[14px] text-feishu-text-secondary flex items-center gap-1.5 font-normal">
-          <Cpu className="w-3.5 h-3.5 text-feishu-text-muted" />
-          {platform}
-        </span>
-      ),
     },
     {
       key: 'sizeDisplay',
       title: '文件体积',
       dataIndex: 'sizeDisplay',
       dataType: 'text',
-      width: 120,
+      minWidth: 80,
+      width: 100,
       render: (size) => (
-        <span className="text-[14px] text-feishu-text-secondary tabular-nums font-normal">
+        <span className="text-[13px] text-feishu-text-secondary tabular-nums font-normal">
           {size}
         </span>
       ),
     },
     {
+      key: 'downloadCountDisplay',
+      title: '下载量',
+      dataIndex: 'downloadCountDisplay',
+      dataType: 'text',
+      minWidth: 80,
+      width: 100,
+      render: (_, record) => {
+        if (!record.downloadCount || record.downloadCount <= 0) {
+          return (
+            <span className="text-[13px] text-feishu-text-secondary tabular-nums font-normal">
+              —
+            </span>
+          );
+        }
+        const formatted = record.downloadCount.toLocaleString();
+        return (
+          <FeishuTooltip title={`GitHub 累计下载：${formatted} 次`}>
+            <span className="text-[13px] text-feishu-text-secondary tabular-nums font-normal cursor-default">
+              {formatted}
+            </span>
+          </FeishuTooltip>
+        );
+      },
+    },
+    {
       key: 'publishedAt',
-      title: '发布/引入时间',
+      title: '发布时间',
       dataIndex: 'publishedAt',
       dataType: 'date',
-      width: 140,
+      minWidth: 100,
+      width: 120,
       render: (date) => (
-        <span className="text-[14px] text-feishu-text-secondary tabular-nums font-normal">
+        <span className="text-[13px] text-feishu-text-secondary tabular-nums font-normal">
           {date}
         </span>
       ),
     },
     {
       key: 'status',
-      title: '引擎状态',
-      dataIndex: 'status',
-      dataType: 'select',
-      width: 130,
-      options: [
-        { label: '使用中', value: 'active', pillVariant: 'green' },
-        { label: '已就绪', value: 'installed', pillVariant: 'blue' },
-        { label: '云端可下载', value: 'online', pillVariant: 'gray' },
-      ],
+      title: '状态',
+      minWidth: 100,
+      width: 120,
       render: (_, record) => {
-        if (record.status === 'active') {
-          return (
-            <FeishuPill variant="green" showDot={true} className="text-[12px] h-[22px] px-2.5 font-normal">
-              使用中
-            </FeishuPill>
-          );
-        }
-        if (record.status === 'installed') {
-          return (
-            <FeishuPill variant="blue" showDot={true} className="text-[12px] h-[22px] px-2.5 font-normal">
-              已就绪
-            </FeishuPill>
-          );
-        }
+        const downloaded = record.status === 'active' || record.status === 'installed';
+        const task = record.task;
+        const taskSummary = task?.phase === 'downloading' && task.totalBytes
+          ? `下载 ${Math.round(task.receivedBytes / task.totalBytes * 85)}%`
+          : task?.phase === 'verifying'
+            ? '正在校验'
+            : task?.phase === 'extracting'
+              ? `正在解压 ${task.extractedEntries || 0} / ${task.totalEntries || 0}`
+              : task?.phase === 'inspecting'
+                ? '正在验真'
+                : undefined;
         return (
-          <FeishuPill variant="gray" showDot={false} className="text-[12px] h-[22px] px-2.5 font-normal">
-            云端可下载
-          </FeishuPill>
+          <div className="space-y-0.5">
+            <FeishuPill
+              variant={downloaded ? 'green' : taskSummary ? 'blue' : record.availability === 'failed' ? 'red' : 'gray'}
+              showDot={false}
+              className="text-[11px] h-[20px] px-2 font-normal"
+            >
+              {downloaded ? '已下载' : taskSummary ? '下载中' : record.availability === 'resumable' ? '可继续' : record.availability === 'failed' ? '失败' : '可下载'}
+            </FeishuPill>
+            {taskSummary && <div className="text-[11px] text-feishu-text-secondary truncate">{taskSummary}</div>}
+          </div>
         );
       },
     },
     {
       key: 'actions',
       title: '操作',
-      width: 220,
+      width: 140,
+      fixed: 'right',
+      resizable: false,
       render: (_, record) => {
-        // 本地已有核心（已安装 / 活跃使用中）
+        // 已下载核心
         if (record.status === 'active' || record.status === 'installed') {
           return (
-            <div className="flex items-center gap-1.5">
-              {record.status !== 'active' && (
-                <FeishuActionLink
-                  variant="primary"
-                  onClick={() => {
-                    onSelectCore(record.id);
-                    feishuToast.success(`已切换默认 FRP 核心为: ${record.name}`);
-                  }}
-                >
-                  设为默认
-                </FeishuActionLink>
-              )}
+            <div className="flex items-center gap-1.5 whitespace-nowrap">
               <FeishuActionLink
                 variant="secondary"
                 onClick={() => handleOpenEditModal(record)}
@@ -710,109 +822,86 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
           );
         }
 
-        // 云端待下载项
+        // 云端待下载项（方案 A：下载主操作为 primary 蓝字，复制链接为 secondary 灰字）
         return (
-          <div className="flex items-center">
-            <button
-              type="button"
+          <div className="flex items-center gap-1.5 whitespace-nowrap">
+            <FeishuActionLink
+              variant="primary"
               onClick={() => handleOpenDownloadModal(record.rawRelease)}
               title={`点击选择下载位置并安装 FRP ${record.version} 核心`}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-normal rounded-[4px] bg-feishu-blue text-white hover:bg-feishu-blue-hover cursor-pointer transition-all shadow-2xs active:scale-95"
             >
-              <DownloadIcon className="w-3.5 h-3.5 shrink-0 text-white" />
-              <span>下载核心</span>
-            </button>
+              下载
+            </FeishuActionLink>
+            <FeishuActionLink
+              variant="secondary"
+              onClick={() => handleCopyDownloadLink(record)}
+              title="复制下载链接"
+            >
+              复制链接
+            </FeishuActionLink>
           </div>
         );
       },
     },
   ], [activeCoreId, onSelectCore]);
 
-  const tabs = [
-    { key: 'all', label: '全部核心引擎', count: unifiedData.length },
-    { key: 'installed', label: '本地已就绪', count: installedCount },
-    { key: 'online', label: 'GitHub 官方版本库', count: onlineCount },
-    { key: 'custom', label: '自定义导入', count: customCount },
-  ];
+  const viewModeSwitcher = (
+    <div className="flex items-center bg-[#F2F3F5] p-0.5 rounded-md border border-[#DEE0E3]">
+      <button
+        type="button"
+        onClick={() => handleSetViewMode('card')}
+        title="卡片视图"
+        aria-label="卡片视图"
+        className={cn(
+          "p-1 rounded-sm transition-colors cursor-pointer flex items-center justify-center",
+          viewMode === 'card' ? "bg-white text-[#165DFF] shadow-xs" : "text-feishu-text-secondary hover:text-feishu-text-primary"
+        )}
+      >
+        <LayoutGrid className="w-3.5 h-3.5" />
+      </button>
+      <button
+        type="button"
+        onClick={() => handleSetViewMode('table')}
+        title="表格视图"
+        aria-label="表格视图"
+        className={cn(
+          "p-1 rounded-[4px] transition-colors cursor-pointer flex items-center justify-center",
+          viewMode === 'table' ? "bg-white text-[#165DFF] shadow-xs" : "text-[#646A75] hover:text-[#1F2329]"
+        )}
+      >
+        <TableIcon className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
 
   return (
     <div style={{ fontFamily: FEISHU_FONT_FAMILY }} className="space-y-4 max-w-7xl mx-auto select-none pb-12">
-      {/* 1. 顶部当前默认核心状态卡片 (1:1 飞书标准白色卡片风格) */}
+      {/* 1. 顶部操作栏：核心归属由“我的连接”逐项选择，不再维护全局默认核心。 */}
       <div className="rounded-xl border border-feishu-border bg-white p-4.5 shadow-2xs">
         <div className="flex flex-wrap items-center justify-between gap-4">
-          {activeCore ? (
-            <div className="flex items-center gap-3.5">
-              <div className="w-10 h-10 rounded-[8px] bg-feishu-blue text-white flex items-center justify-center shadow-xs shrink-0">
-                <PluginIcon className="w-5 h-5" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2.5 flex-wrap">
-                  <h2 className="text-[15px] font-medium text-feishu-text-primary">
-                    {activeCore.name}
-                  </h2>
-                  <FeishuPill variant="green" showDot={true} className="text-[11px] h-[20px] px-2 font-normal">
-                    当前默认
-                  </FeishuPill>
-                  <span className="text-[12px] text-feishu-blue font-normal bg-feishu-blue-light px-2 py-0.5 rounded-[4px] tabular-nums">
-                    {activeCore.version}
-                  </span>
-                </div>
-                <div className="flex items-center gap-3 text-[12px] text-feishu-text-secondary mt-1 flex-wrap font-normal">
-                  <span className="flex items-center gap-1">
-                    <Folder className="w-3.5 h-3.5 text-feishu-text-muted" />
-                    {activeCore.path || '未指定路径'}
-                  </span>
-                  <span>•</span>
-                  <span>架构: <strong>{activeCore.os || 'Windows'} {activeCore.arch || 'x86_64'}</strong></span>
-                  <span>•</span>
-                  <span className="flex items-center gap-1 text-feishu-success">
-                    <ShieldCheck className="w-3.5 h-3.5" /> 核心已就绪
-                  </span>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="flex items-center gap-3.5">
-              <div className="w-10 h-10 rounded-[8px] bg-feishu-warning-bg text-feishu-warning flex items-center justify-center shadow-xs shrink-0">
-                <AlertCircle className="w-5 h-5" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2.5 flex-wrap">
-                  <h2 className="text-[15px] font-medium text-feishu-text-primary">
-                    尚未就绪：未配置任何 FRP 核心
-                  </h2>
-                  <FeishuPill variant="orange" showDot={true} className="text-[11px] h-[20px] px-2 font-normal">
-                    待下载或绑定
-                  </FeishuPill>
-                </div>
-                <p className="text-[12px] text-feishu-text-muted mt-1 font-normal">
-                  系统尚未安装任何 FRP 核心。请在下方表格中点击 <strong>【下载核心】</strong> 选择安装位置，或点击右上角 <strong>【选择本地已有核心】</strong> 导入文件。
-                </p>
-              </div>
-            </div>
-          )}
+          <div>
+            <h2 className="text-[15px] font-medium text-feishu-text-primary">FRP 版本库</h2>
+            <p className="text-[12px] text-feishu-text-muted mt-1">下载或导入版本后，请在“我的连接”中为每个连接选择要使用的已下载版本。</p>
+          </div>
 
           <div className="flex items-center gap-2.5">
             <Button
               size="sm"
               variant="default"
-              onClick={handleTriggerFilePicker}
-              className="h-8 text-[13px] px-3.5 rounded-[6px] bg-feishu-blue text-white hover:bg-feishu-blue-hover cursor-pointer"
+              onClick={handleImportLocalDirectory}
+              className="h-8 text-[13px] px-3.5 rounded-md bg-feishu-blue text-white hover:bg-feishu-blue-hover cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5 mr-1" />
-              选择本地已有核心
+              导入本地 FRP
             </Button>
 
             <Button
               size="sm"
               variant="outline"
               onClick={() => {
-                const url = activeCore?.version
-                  ? `https://github.com/fatedier/frp/releases/tag/${activeCore.version}`
-                  : 'https://github.com/fatedier/frp/releases';
-                window.open(url, '_blank');
+                window.open('https://github.com/fatedier/frp/releases', '_blank');
               }}
-              className="h-8 text-[13px] px-3 rounded-[6px] border-feishu-border bg-white text-feishu-text-primary hover:bg-[#F2F3F5]"
+              className="h-8 text-[13px] px-3 rounded-md border-feishu-border bg-white text-feishu-text-primary hover:bg-[#F2F3F5]"
             >
               <ExternalLink className="w-3.5 h-3.5 mr-1 text-feishu-text-muted" />
               发行日志
@@ -821,34 +910,102 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
         </div>
       </div>
 
-      {/* 2. 飞书多维数据表格 (移除顶栏加速源，聚焦核心管理) */}
-      <FeishuDataTable
-        title="FRP 核心引擎管理列表"
-        tabs={tabs}
-        activeTabKey={activeTab}
-        onTabChange={(key) => setActiveTab(key as CoreTabKey)}
-        columns={columns}
-        data={filteredData}
-        rowKey="id"
-        selectable={false}
-        searchPlaceholder="在核心列表中搜索版本、路径或名称..."
-        addButtonText="+ 选择本地核心"
-        onAdd={handleTriggerFilePicker}
-        customRightTools={
-          <div className="flex items-center gap-2">
-            <Button
-              size="iconSm"
-              variant="ghost"
-              onClick={loadReleases}
-              disabled={loadingReleases}
-              title="刷新 GitHub Releases 版本库"
-              className="w-8 h-8 rounded-[6px]"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 text-feishu-text-secondary ${loadingReleases ? 'animate-spin' : ''}`} />
-            </Button>
+      {/* 2. 核心引擎展示区（支持表格视图与卡片视图） */}
+      {viewMode === 'table' ? (
+        <FeishuDataTable
+          title="FRP 核心引擎管理列表"
+          columns={columns}
+          data={filteredData}
+          rowKey="id"
+          selectable={false}
+          searchPlaceholder="在核心列表中搜索版本、路径或名称..."
+          customRightTools={
+            <div className="flex items-center gap-2">
+              {viewModeSwitcher}
+
+              <Button
+                size="iconSm"
+                variant="ghost"
+                onClick={loadReleases}
+                disabled={loadingReleases}
+                title="刷新 GitHub Releases 版本库"
+                className="w-8 h-8 rounded-md"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-feishu-text-secondary ${loadingReleases ? 'animate-spin' : ''}`} />
+              </Button>
+            </div>
+          }
+        />
+      ) : (
+        <div className="bg-white rounded-xl border border-feishu-border shadow-2xs overflow-hidden">
+          {/* 卡片视图工具栏 */}
+          <div className="p-4 border-b border-[#DEE0E3] space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <h2 className="text-[15px] font-semibold text-feishu-text-primary tracking-tight">
+                  FRP 核心引擎管理列表
+                </h2>
+                <span className="text-[12px] text-feishu-text-muted tabular-nums">
+                  共 {cardFilteredData.length} 项
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-feishu-text-muted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={searchKeyword}
+                    onChange={(e) => setSearchKeyword(e.target.value)}
+                    placeholder="在核心列表中搜索版本、路径或名称..."
+                    className="h-8 pl-8 pr-3 text-[13px] rounded-md border border-[#DEE0E3] bg-white text-feishu-text-primary focus:outline-none w-64 transition-colors"
+                  />
+                </div>
+
+                {viewModeSwitcher}
+
+                <Button
+                  size="iconSm"
+                  variant="ghost"
+                  onClick={loadReleases}
+                  disabled={loadingReleases}
+                  title="刷新 GitHub Releases 版本库"
+                  className="w-8 h-8 rounded-md"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 text-feishu-text-secondary ${loadingReleases ? 'animate-spin' : ''}`} />
+                </Button>
+              </div>
+            </div>
+
           </div>
-        }
-      />
+
+          {/* 卡片网格区 */}
+          <div className="p-4 bg-[#F8F9FA]">
+            {cardFilteredData.length === 0 ? (
+              <div className="py-12 bg-white rounded-lg border border-[#DEE0E3]">
+                <FeishuEmptyState
+                  title="暂无匹配的核心引擎"
+                  description="您可以调整筛选条件或点击上方按钮导入本地核心"
+                />
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {cardFilteredData.map((core) => (
+                  <CoreCard
+                    key={core.id}
+                    core={core}
+                    onSelect={onSelectCore}
+                    onEdit={handleOpenEditModal}
+                    onDelete={handleOpenDeleteModal}
+                    onDownload={handleOpenDownloadModal}
+                    onCopyLink={handleCopyDownloadLink}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 3. 弹窗：更改/编辑已配置的 FRP 核心 */}
       <FeishuDialog
@@ -863,7 +1020,7 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
               variant="outline"
               size="sm"
               onClick={() => setEditModal((prev) => ({ ...prev, isOpen: false }))}
-              className="h-8 px-3 text-[13px] rounded-[6px] border-feishu-border bg-white hover:bg-[#F2F3F5]"
+              className="h-8 px-3 text-[13px] rounded-md border-feishu-border bg-white hover:bg-[#F2F3F5]"
             >
               取消
             </Button>
@@ -871,7 +1028,7 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
               variant="default"
               size="sm"
               onClick={handleConfirmEditModal}
-              className="h-8 px-4 text-[13px] rounded-[6px] bg-feishu-blue text-white hover:bg-feishu-blue-hover"
+              className="h-8 px-4 text-[13px] rounded-md bg-feishu-blue text-white hover:bg-feishu-blue-hover"
             >
               <Check className="w-3.5 h-3.5 mr-1 text-white" />
               保存更改
@@ -893,7 +1050,7 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
           </div>
 
           <div>
-            <label className="block text-[12px] font-medium text-feishu-text-primary mb-1 flex items-center justify-between">
+            <label className="block text-[12px] font-medium text-feishu-text-primary mb-1 items-center justify-between">
               <span>二进制文件物理绝对路径</span>
               <span className="text-[11px] text-feishu-text-muted">可手动修改或重新浏览</span>
             </label>
@@ -949,15 +1106,6 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
             </div>
           </div>
 
-          <label className="flex items-center gap-2 text-[13px] text-feishu-text-primary cursor-pointer select-none pt-1">
-            <input
-              type="checkbox"
-              checked={editModal.setAsDefault}
-              onChange={(e) => setEditModal((prev) => ({ ...prev, setAsDefault: e.target.checked }))}
-              className="rounded border-feishu-border text-feishu-blue focus:ring-feishu-blue w-4 h-4 cursor-pointer"
-            />
-            <span>设为系统默认工作 FRP 核心</span>
-          </label>
         </div>
       </FeishuDialog>
 
@@ -1005,21 +1153,22 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
                 variant="outline"
                 size="sm"
                 onClick={() => setDownloadModal((prev) => ({ ...prev, isOpen: false }))}
-                disabled={downloadModal.isDownloading}
                 className="h-8 px-3.5 text-[13px] rounded-[6px] border-feishu-border bg-white text-feishu-text-primary hover:bg-[#F2F3F5]"
               >
-                取消
+                {downloadModal.isDownloading ? '后台继续' : downloadModal.taskId ? '关闭' : '取消'}
               </Button>
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handleConfirmDownload}
-                disabled={downloadModal.isDownloading}
-                className="h-8 px-4 text-[13px] rounded-[6px] bg-feishu-blue text-white hover:bg-feishu-blue-hover"
-              >
-                <DownloadIcon className="w-3.5 h-3.5 mr-1.5 text-white" />
-                {downloadModal.isDownloading ? '正在下载并解压...' : '确认下载并解压'}
-              </Button>
+              {!downloadModal.taskId && (
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={handleConfirmDownload}
+                  disabled={downloadModal.isDownloading}
+                  className="h-8 px-4 text-[13px] rounded-[6px] bg-feishu-blue text-white hover:bg-feishu-blue-hover"
+                >
+                  <DownloadIcon className="w-3.5 h-3.5 mr-1.5 text-white" />
+                  {downloadModal.isDownloading ? '正在下载并解压...' : '确认下载并解压'}
+                </Button>
+              )}
             </div>
           }
         >
@@ -1050,6 +1199,38 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
               </div>
             </div>
 
+            {activeDownloadTask && (
+              <div className="p-3.5 rounded-[8px] border border-[#DEE9FE] bg-[#F5F8FF] space-y-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <FeishuPill variant={activeDownloadTask.phase === 'failed' ? 'red' : activeDownloadTask.phase === 'completed' ? 'green' : 'blue'} showDot={false} className="text-[11px] h-[20px] px-2 font-normal">
+                      {activeDownloadTask.phase === 'downloading' ? '下载中' : activeDownloadTask.phase === 'verifying' ? '正在校验' : activeDownloadTask.phase === 'extracting' ? '正在解压' : activeDownloadTask.phase === 'inspecting' ? '正在验真' : activeDownloadTask.phase === 'completed' ? '已完成' : '失败'}
+                    </FeishuPill>
+                    <span className="text-[13px] font-medium text-feishu-text-primary">
+                      {activeDownloadTask.phase === 'extracting' && activeDownloadTask.totalEntries
+                        ? `正在解压 ${activeDownloadTask.extractedEntries || 0} / ${activeDownloadTask.totalEntries}`
+                        : activeDownloadTask.phase === 'failed'
+                          ? activeDownloadTask.error || '下载任务失败'
+                          : activeDownloadTask.phase === 'completed'
+                            ? '核心已下载、校验、解压并验真完成'
+                            : '下载与安装任务进行中'}
+                    </span>
+                  </div>
+                  <span className="text-[12px] tabular-nums text-feishu-blue">{activeDownloadProgress}%</span>
+                </div>
+                <div className="h-2 rounded-full bg-[#DEE9FE] overflow-hidden">
+                  <div className={cn('h-full rounded-full transition-[width]', activeDownloadTask.phase === 'failed' ? 'bg-feishu-danger' : 'bg-feishu-blue')} style={{ width: `${activeDownloadProgress}%` }} />
+                </div>
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-feishu-text-secondary tabular-nums">
+                  {activeDownloadTask.phase === 'downloading' && <span>{(activeDownloadTask.receivedBytes / 1_000_000).toFixed(1)} MB / {activeDownloadTask.totalBytes ? `${(activeDownloadTask.totalBytes / 1_000_000).toFixed(1)} MB` : '总大小未知'}</span>}
+                  {activeDownloadTask.phase === 'downloading' && activeDownloadTask.speedBytesPerSecond !== undefined && <span>{(activeDownloadTask.speedBytesPerSecond / 1_000_000).toFixed(1)} MB/s</span>}
+                  {activeDownloadTask.phase === 'downloading' && activeDownloadTask.etaSeconds !== undefined && <span>预计剩余下载时间 {activeDownloadTask.etaSeconds} 秒</span>}
+                  {activeDownloadTask.phase === 'extracting' && activeDownloadTask.currentFileName && <span>当前文件：{activeDownloadTask.currentFileName}</span>}
+                  <span className="break-all">目标目录：{activeDownloadTask.targetDir}</span>
+                </div>
+              </div>
+            )}
+
             {/* 镜像源与系统架构（并排双列布局，共占2行） */}
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -1072,15 +1253,11 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
               <div>
                 <label className="block text-[12px] font-medium text-feishu-text-primary mb-1.5 flex items-center justify-between">
                   <span className="truncate">目标系统与架构</span>
-                  <span className="text-[11px] text-feishu-text-muted shrink-0">默认已匹配本机</span>
+                  <span className="text-[11px] text-feishu-text-muted shrink-0">仅允许当前电脑</span>
                 </label>
-                <FeishuSelect
-                  options={PLATFORM_PRESETS}
-                  value={`${downloadModal.targetOs}_${downloadModal.targetArch}`}
-                  onChange={(val) => handleChangeTargetPlatform(val || 'windows_amd64')}
-                  size="md"
-                  className="w-full"
-                />
+                <div className="h-9 px-3 rounded-[6px] border border-feishu-border bg-[#F7F8FA] flex items-center text-[13px] text-feishu-text-secondary">
+                  {hostPlatform.platformDisplay}
+                </div>
               </div>
             </div>
 
@@ -1120,16 +1297,6 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
               </div>
             </div>
 
-            {/* 设为默认选项 */}
-            <label className="flex items-center gap-2 text-[13px] text-feishu-text-primary cursor-pointer select-none pt-0.5">
-              <input
-                type="checkbox"
-                checked={downloadModal.downloadAsDefault}
-                onChange={(e) => setDownloadModal((prev) => ({ ...prev, downloadAsDefault: e.target.checked }))}
-                className="rounded border-feishu-border text-feishu-blue focus:ring-feishu-blue w-4 h-4 cursor-pointer"
-              />
-              <span>下载完成后自动设为系统默认 FRP 工作引擎</span>
-            </label>
           </div>
         </FeishuDialog>
       )}
