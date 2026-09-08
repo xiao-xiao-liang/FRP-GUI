@@ -317,4 +317,75 @@ describe('ProfileCard (我的连接卡片)', () => {
     expect(screen.getByRole('button', { name: '停止连接' })).toBeInTheDocument();
     expect(screen.queryByText('正在启动...')).not.toBeInTheDocument();
   });
+
+  it('展示置顶标记、分组名称和前两个标签，多余标签显示剩余数量', () => {
+    render(
+      <ProfileCard
+        profile={makeProfile({
+          id: 'p-org',
+          name: '生产服务',
+          isPinned: true,
+          groupId: 'g-1',
+          tags: ['web', 'prod', 'internal', 'api'],
+        })}
+        groupName="生产组"
+        onToggle={vi.fn()}
+        onEdit={vi.fn()}
+        onClone={vi.fn()}
+        onDelete={vi.fn()}
+        onSync={vi.fn()}
+        onViewLogs={vi.fn()}
+        onDiagnose={vi.fn()}
+        onRepairCore={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText('置顶')).toBeInTheDocument();
+    expect(screen.getByText('生产组')).toBeInTheDocument();
+    expect(screen.getByText('#web')).toBeInTheDocument();
+    expect(screen.getByText('#prod')).toBeInTheDocument();
+    expect(screen.getByText('+2')).toBeInTheDocument();
+    expect(screen.queryByText('#internal')).not.toBeInTheDocument();
+  });
+
+  it('支持复选框选择和更多菜单置顶切换', async () => {
+    const user = userEvent.setup();
+    const onSelectChange = vi.fn();
+    const onTogglePin = vi.fn();
+
+    const profile = makeProfile({
+      id: 'p-pin-test',
+      name: '待置顶连接',
+      isPinned: false,
+    });
+
+    render(
+      <ProfileCard
+        profile={profile}
+        selected={false}
+        onSelectChange={onSelectChange}
+        onTogglePin={onTogglePin}
+        onToggle={vi.fn()}
+        onEdit={vi.fn()}
+        onClone={vi.fn()}
+        onDelete={vi.fn()}
+        onSync={vi.fn()}
+        onViewLogs={vi.fn()}
+        onDiagnose={vi.fn()}
+        onRepairCore={vi.fn()}
+      />
+    );
+
+    // 复选框点击
+    const checkbox = screen.getByRole('checkbox', { name: '选择 待置顶连接' });
+    expect(checkbox).not.toBeChecked();
+    await user.click(checkbox);
+    expect(onSelectChange).toHaveBeenCalledWith(true);
+
+    // 更多操作中的置顶
+    await user.click(screen.getByRole('button', { name: '更多操作' }));
+    const pinItem = screen.getByText('置顶连接');
+    await user.click(pinItem);
+    expect(onTogglePin).toHaveBeenCalledWith(profile);
+  });
 });

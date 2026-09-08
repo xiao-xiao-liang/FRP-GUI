@@ -257,15 +257,108 @@ export function FeishuDataTable<T extends Record<string, any>>({
   // 判断是否曾手动拖拽调整过列宽
   const hasResized = Object.keys(columnWidths).length > 0;
 
+  // 监听容器宽度以实现智能自适应列宽（在操作列固定的同时，其余列根据内容与列数占满空间）
+  const [containerWidth, setContainerWidth] = useState<number>(0);
+
+  useEffect(() => {
+    const el = tableContainerRef.current;
+    if (!el) return;
+
+    const updateWidth = () => {
+      if (el.clientWidth > 0) {
+        setContainerWidth(el.clientWidth);
+      }
+    };
+
+    updateWidth();
+
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          const w = Math.round(entry.contentRect.width);
+          if (w > 0) {
+            setContainerWidth(w);
+          }
+        }
+      });
+      ro.observe(el);
+      return () => ro.disconnect();
+    } else {
+      window.addEventListener("resize", updateWidth);
+      return () => window.removeEventListener("resize", updateWidth);
+    }
+  }, []);
+
+  // 固定列识别函数（如操作列或明确标注 sticky/fixed 的列）
+  const isFixedColumn = (c: FeishuColumn<T>) =>
+    c.key === "actions" || c.fixed === "right" || c.fixed === "left" || c.fixed === true;
+
+  // 基础最小表格宽度（保证窄屏下不会挤压列，支持横向滚动）
+  const minTableWidth = useMemo(() => {
+    let total = selectable ? 48 : 0;
+    columns.forEach((c) => {
+      total += computedColumnWidths[c.key] || (typeof c.width === "number" ? c.width : 160);
+    });
+    return total;
+  }, [columns, computedColumnWidths, selectable]);
+
+  // 计算最终用于排版的各列像素宽度：
+  // 1. 手动调整过列宽时：直接使用用户调整后的像素；
+  // 2. 默认自适应模式下：操作列等固定列锁定设定尺寸，多余容器空间按各内容列字符与权重自适应撑满 100%。
+  const effectiveColumnWidths = useMemo<Record<string, number>>(() => {
+    if (hasResized) {
+      const widths: Record<string, number> = {};
+      columns.forEach((col) => {
+        widths[col.key] =
+          columnWidths[col.key] !== undefined
+            ? columnWidths[col.key]
+            : (typeof col.width === "number" ? col.width : 160);
+      });
+      return widths;
+    }
+
+    const baseWidths: Record<string, number> = {};
+    let fixedTotal = selectable ? 48 : 0;
+    let contentBaseTotal = 0;
+    const contentCols: FeishuColumn<T>[] = [];
+
+    columns.forEach((col) => {
+      const base = computedColumnWidths[col.key] ?? (typeof col.width === "number" ? col.width : 160);
+      baseWidths[col.key] = base;
+      if (isFixedColumn(col)) {
+        fixedTotal += base;
+      } else {
+        contentBaseTotal += base;
+        contentCols.push(col);
+      }
+    });
+
+    if (!containerWidth || containerWidth <= fixedTotal + contentBaseTotal || contentBaseTotal === 0) {
+      return baseWidths;
+    }
+
+    const extraSpace = containerWidth - fixedTotal - contentBaseTotal;
+    const finalWidths: Record<string, number> = { ...baseWidths };
+    // 均等平分剩余空间给各内容列，避免某列由于长字数而垄断空间产生巨大空隙
+    const equalShare = Math.floor(extraSpace / contentCols.length);
+    const remainder = extraSpace % contentCols.length;
+
+    contentCols.forEach((col, idx) => {
+      finalWidths[col.key] = baseWidths[col.key] + equalShare + (idx < remainder ? 1 : 0);
+    });
+
+    return finalWidths;
+  }, [hasResized, columns, columnWidths, computedColumnWidths, containerWidth, selectable]);
+
   // 表格总物理像素宽度 (拖拽后根据各列真实像素宽度累加，锁定物理排版)
   const totalTableWidth = useMemo(() => {
     let total = selectable ? 44 : 0;
     columns.forEach((c) => {
       const explicitWidth = columnWidths[c.key];
-      total += typeof explicitWidth === "number" ? explicitWidth : (computedColumnWidths[c.key] || 160);
+      total += typeof explicitWidth === "number" ? explicitWidth : (effectiveColumnWidths[c.key] || computedColumnWidths[c.key] || 160);
     });
     return total;
-  }, [columns, columnWidths, computedColumnWidths, selectable]);
+  }, [columns, columnWidths, effectiveColumnWidths, computedColumnWidths, selectable]);
 
   // Tab 栏动画指示条定位计算
   const tabElementsRef = useRef<Record<string, HTMLDivElement | null>>({});
@@ -327,7 +420,7 @@ export function FeishuDataTable<T extends Record<string, any>>({
       if (el) {
         nextWidths[c.key] = Math.round(el.getBoundingClientRect().width);
       } else {
-        nextWidths[c.key] = columnWidths[c.key] || computedColumnWidths[c.key] || 160;
+        nextWidths[c.key] = columnWidths[c.key] || effectiveColumnWidths[c.key] || computedColumnWidths[c.key] || 160;
       }
     });
 
@@ -580,6 +673,7 @@ export function FeishuDataTable<T extends Record<string, any>>({
           className="text-left border-collapse text-[14px]"
           style={{
             tableLayout: "fixed",
+            minWidth: !hasResized && minTableWidth ? `${minTableWidth}px` : undefined,
             width: hasResized && totalTableWidth ? `${totalTableWidth}px` : "100%",
           }}
         >
@@ -587,12 +681,7 @@ export function FeishuDataTable<T extends Record<string, any>>({
           <colgroup>
             {selectable && <col style={{ width: "48px" }} />}
             {columns.map((col) => {
-              const explicitWidth =
-                columnWidths[col.key] !== undefined
-                  ? columnWidths[col.key]
-                  : hasResized
-                    ? (typeof col.width === "number" ? col.width : 160)
-                    : computedColumnWidths[col.key];
+              const explicitWidth = effectiveColumnWidths[col.key];
               return (
                 <col
                   key={col.key}

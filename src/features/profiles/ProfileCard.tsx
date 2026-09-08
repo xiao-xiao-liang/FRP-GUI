@@ -19,6 +19,11 @@ import { feishuToast } from '../../components/ui/FeishuToast';
 
 interface ProfileCardProps {
   profile: Profile;
+  groupName?: string;
+  selected?: boolean;
+  selectionDisabled?: boolean;
+  onSelectChange?: (selected: boolean) => void;
+  onTogglePin?: (profile: Profile) => void;
   onToggle: (profile: Profile) => void;
   onEdit: (profile: Profile) => void;
   onClone: (profile: Profile) => void;
@@ -31,6 +36,11 @@ interface ProfileCardProps {
 
 export const ProfileCard: React.FC<ProfileCardProps> = ({
   profile,
+  groupName,
+  selected = false,
+  selectionDisabled = false,
+  onSelectChange,
+  onTogglePin,
   onToggle,
   onEdit,
   onClone,
@@ -156,7 +166,17 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({
       <div>
         {/* 卡片头部 */}
         <div className="flex items-start justify-between gap-3">
-          <div className="flex items-center gap-3.5 min-w-0">
+          <div className="flex items-center gap-3 min-w-0">
+            {onSelectChange && (
+              <input
+                type="checkbox"
+                aria-label={`选择 ${profile.name}`}
+                checked={selected}
+                disabled={selectionDisabled}
+                onChange={(e) => onSelectChange(e.target.checked)}
+                className="h-4 w-4 rounded accent-[#165DFF] cursor-pointer shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
+              />
+            )}
             <div
               className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] transition-transform duration-200 group-hover:scale-105 ${
                 profile.type === 'frps'
@@ -167,13 +187,18 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({
               <Server className="h-5 w-5" />
             </div>
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h3
                   onClick={() => onEdit(profile)}
                   className="truncate text-[16px] font-semibold text-[#1F2329] group-hover:text-[#165DFF] transition-colors cursor-pointer"
                 >
                   {profile.name}
                 </h3>
+                {profile.isPinned && (
+                  <span className="inline-flex items-center text-[11px] font-medium text-[#165DFF] bg-[#E8F3FF] px-1.5 py-0.5 rounded shrink-0">
+                    置顶
+                  </span>
+                )}
               </div>
               <p className="text-[13px] text-[#8F959E] mt-0.5 truncate">
                 {profile.description || `节点: ${serverAddr}:${serverPort}`}
@@ -185,6 +210,30 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({
             {getStatusPill()}
           </div>
         </div>
+
+        {/* 分组与标签 */}
+        {(groupName || (profile.tags && profile.tags.length > 0)) && (
+          <div className="mt-2.5 flex items-center gap-1.5 flex-wrap">
+            {groupName && (
+              <span className="inline-flex items-center text-[11px] text-[#646A75] bg-[#F2F3F5] px-2 py-0.5 rounded-[4px] font-medium">
+                {groupName}
+              </span>
+            )}
+            {profile.tags && profile.tags.slice(0, 2).map((tag) => (
+              <span
+                key={tag}
+                className="inline-flex items-center text-[11px] text-[#3370FF] bg-[#F0F5FF] px-1.5 py-0.5 rounded-[4px] font-medium"
+              >
+                #{tag}
+              </span>
+            ))}
+            {profile.tags && profile.tags.length > 2 && (
+              <span className="text-[11px] text-[#8F959E] font-medium">
+                +{profile.tags.length - 2}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* 服务器连接信息 */}
         <div className="mt-4 flex items-center justify-between text-[13px] bg-[#F7F8FA] px-3 py-2 rounded-[6px] border border-[#EBECEF]">
@@ -404,6 +453,11 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({
               <Copy className="w-3.5 h-3.5 text-[#646A75]" />
               <span>克隆副本</span>
             </DropdownMenuItem>
+            {onTogglePin && (
+              <DropdownMenuItem onClick={() => onTogglePin(profile)} className="flex items-center gap-2 px-2.5 py-1.5 text-[13px] text-[#1F2329] hover:bg-[#F2F3F5] rounded-[4px] cursor-pointer">
+                <span>{profile.isPinned ? '取消置顶' : '置顶连接'}</span>
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator className="my-1 bg-[#EFF0F1]" />
             <DropdownMenuItem onClick={() => onDelete(profile)} className="flex items-center gap-2 px-2.5 py-1.5 text-[13px] text-[#F53F3F] hover:bg-[#FFECEC] rounded-[4px] cursor-pointer">
               <Trash2 className="w-3.5 h-3.5 text-[#F53F3F]" />

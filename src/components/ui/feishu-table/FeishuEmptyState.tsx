@@ -47,6 +47,9 @@ export interface FeishuEmptyStateProps {
   image?: ReactNode;
   title?: string;
   description?: string;
+  actionText?: string;
+  onAction?: () => void;
+  children?: ReactNode;
   className?: string;
 }
 
@@ -58,6 +61,9 @@ export const FeishuEmptyState: React.FC<FeishuEmptyStateProps> = ({
   image,
   title = "暂无相关记录",
   description = "当前暂无数据",
+  actionText,
+  onAction,
+  children,
   className,
 }) => {
   return (
@@ -83,6 +89,19 @@ export const FeishuEmptyState: React.FC<FeishuEmptyStateProps> = ({
           {description}
         </div>
       )}
+
+      {/* 4. 操作按钮 */}
+      {actionText && onAction && (
+        <button
+          type="button"
+          onClick={onAction}
+          className="mt-3 text-[13px] font-medium text-[#165DFF] hover:text-[#0E4FD9] cursor-pointer transition-colors"
+        >
+          {actionText}
+        </button>
+      )}
+
+      {children}
     </div>
   );
 };

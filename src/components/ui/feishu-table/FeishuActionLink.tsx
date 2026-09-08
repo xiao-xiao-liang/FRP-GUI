@@ -7,6 +7,7 @@ export interface FeishuActionLinkProps {
   variant?: "primary" | "danger" | "secondary";
   underline?: boolean;
   className?: string;
+  title?: string;
 }
 
 /**
@@ -23,10 +24,12 @@ export const FeishuActionLink: React.FC<FeishuActionLinkProps> = ({
   variant = "primary",
   underline = false,
   className,
+  title,
 }) => {
   return (
     <button
       type="button"
+      title={title}
       onClick={onClick}
       className={cn(
         "inline-flex items-center justify-center h-[28px] px-2 rounded-[6px] text-[14px] font-normal transition-all duration-150 cursor-pointer select-none border-none bg-transparent no-underline first:-ml-2",
