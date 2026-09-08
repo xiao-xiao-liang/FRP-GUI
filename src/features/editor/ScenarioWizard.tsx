@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FrpCore, Profile } from '../../types/frp';
+import { FrpCore, FrpServerNode, Profile } from '../../types/frp';
 import { 
   ScenarioFormValues, 
   validateProfileForm, 
@@ -8,11 +8,13 @@ import {
 import { WIZARD_SCENARIOS, WizardScenario } from '../../services/presets';
 import { testServerConnectivity } from '../../services/ipc';
 import { Button } from '../../components/ui/button';
+import { FeishuSelect } from '../../components/ui/feishu-select';
 import { 
   Monitor, Terminal, Globe, HardDrive, Gamepad2, Sliders, 
   Eye, EyeOff, ChevronRight, AlertCircle, ArrowLeft 
 } from 'lucide-react';
 import { feishuToast } from '../../components/ui/FeishuToast';
+import { ProfileTagEditor } from '../profiles/ProfileTagEditor';
 
 const ICON_MAP: Record<string, React.FC<any>> = {
   Monitor, Terminal, Globe, HardDrive, Gamepad2, Sliders
@@ -20,9 +22,11 @@ const ICON_MAP: Record<string, React.FC<any>> = {
 
 export interface ScenarioWizardProps {
   activeCore: FrpCore | null;
+  cores?: FrpCore[];
+  serverNodes?: FrpServerNode[];
   onSave: (profile: Profile) => void;
   onCancel: () => void;
-  onSwitchToAdvanced: (draft: ScenarioFormValues) => void;
+  onSwitchToAdvanced: (draft: ScenarioFormValues, coreId?: string) => void;
 }
 
 const maskTomlToken = (toml: string): string => {
@@ -33,6 +37,8 @@ const maskTomlToken = (toml: string): string => {
 
 export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
   activeCore,
+  cores = [],
+  serverNodes = [],
   onSave,
   onCancel,
   onSwitchToAdvanced,
@@ -47,6 +53,8 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
     authToken: '',
   });
 
+  const [tags, setTags] = useState<string[]>([]);
+  const [coreId, setCoreId] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<'success' | 'failed' | null>(null);
@@ -62,6 +70,16 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
   const currentProxyType = variant?.defaultType ?? scenario.defaultType;
   const currentName = variant?.defaultName ?? scenario.defaultName;
   const currentProxyName = variant?.defaultProxyName ?? scenario.defaultProxyName;
+  const reusableServerNodes = serverNodes.filter((node) =>
+    node.status === 'running'
+    && node.serviceStatus === 'running'
+    && Boolean(node.deployment)
+    && Boolean(node.credentialRef),
+  );
+  const downloadedCoreOptions = cores
+    .filter((core) => Boolean(core.path) && core.status !== 'not_downloaded')
+    .map((core) => ({ value: core.id, label: `${core.version} · ${core.os}/${core.arch}` }));
+  const selectedCore = cores.find((core) => core.id === coreId) ?? null;
 
   const handleNextStep = (s: WizardScenario) => {
     if (s.id === 'custom') {
@@ -70,6 +88,7 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
         serverAddr: draft.serverAddr || '',
         serverPort: draft.serverPort || 7000,
         authToken: draft.authToken,
+        serverNodeId: draft.serverNodeId,
         scenarioId: s.id,
         proxyName: s.defaultProxyName,
         proxyType: s.defaultType,
@@ -80,7 +99,7 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
         useCompression: draft.useCompression,
         transportProtocol: draft.transportProtocol,
         tlsEnable: draft.tlsEnable,
-      });
+      }, coreId);
       return;
     }
     setScenarioId(s.id);
@@ -117,6 +136,7 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
       serverAddr: draft.serverAddr || '',
       serverPort: parsePort(draft.serverPort, 7000) ?? 7000,
       authToken: draft.authToken,
+      serverNodeId: draft.serverNodeId,
       scenarioId: scenario.id,
       variantId,
       proxyName: currentProxyName,
@@ -129,12 +149,17 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
       useCompression: draft.useCompression,
       transportProtocol: draft.transportProtocol,
       tlsEnable: draft.tlsEnable,
+      tags,
     };
   };
 
   const handleSave = async (forceSave = false) => {
     const fullDraft = buildDraft();
-    const validation = validateProfileForm(fullDraft, { activeCore });
+    if (!coreId) {
+      feishuToast.error('请选择已下载的 FRP 核心版本');
+      return;
+    }
+    const validation = validateProfileForm(fullDraft, { activeCore: selectedCore });
     
     if (!validation.valid) {
       const firstErr = Object.values(validation.errors)[0];
@@ -150,7 +175,7 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
       try {
         const res = await testServerConnectivity(fullDraft.serverAddr, fullDraft.serverPort);
         if (res.status === 'success') {
-          const profile = buildScenarioProfile(fullDraft);
+          const profile = { ...buildScenarioProfile(fullDraft), coreId };
           onSave(profile);
         } else {
           setTestResult('failed');
@@ -164,7 +189,7 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
         setTesting(false);
       }
     } else {
-      const profile = buildScenarioProfile(fullDraft);
+      const profile = { ...buildScenarioProfile(fullDraft), coreId };
       onSave(profile);
     }
   };
@@ -207,7 +232,7 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
       </div>
 
       <div className="space-y-4 flex-1">
-        {!activeCore && (
+        {downloadedCoreOptions.length === 0 && (
           <div className="bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded text-sm flex items-start gap-2">
             <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
             <div>
@@ -218,6 +243,19 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
             </div>
           </div>
         )}
+
+        <div>
+          <label className="block text-sm font-medium mb-1">FRP 核心版本</label>
+          <FeishuSelect
+            options={downloadedCoreOptions}
+            value={coreId}
+            onChange={setCoreId}
+            placeholder={downloadedCoreOptions.length ? '请选择已下载版本' : '暂无已下载版本'}
+            disabled={downloadedCoreOptions.length === 0}
+            className="w-full"
+          />
+          <p className="mt-1 text-xs text-gray-500">仅可选择已下载或已导入的 FRPC 核心。</p>
+        </div>
 
         {scenario.variants && (
           <div className="flex gap-2">
@@ -270,6 +308,35 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
           </div>
         </div>
 
+        {reusableServerNodes.length > 0 && (
+          <div>
+            <label htmlFor="serverNode" className="block text-sm font-medium mb-1">已部署 FRPS 节点</label>
+            <select
+              id="serverNode"
+              className="w-full border rounded px-3 py-2 text-sm"
+              value={draft.serverNodeId || ''}
+              onChange={(event) => {
+                const node = reusableServerNodes.find((item) => item.id === event.target.value);
+                setDraft((current) => node
+                  ? {
+                    ...current,
+                    serverNodeId: node.id,
+                    serverAddr: node.host,
+                    serverPort: node.frpsBindPort,
+                    authToken: '',
+                  }
+                  : { ...current, serverNodeId: undefined });
+              }}
+            >
+              <option value="">手动填写服务器与 Token</option>
+              {reusableServerNodes.map((node) => (
+                <option key={node.id} value={node.id}>{node.name}（{node.host}:{node.frpsBindPort}）</option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-gray-500">选择节点后，桌面端会在启动时从系统凭据库读取 Token。</p>
+          </div>
+        )}
+
         <div>
           <label htmlFor="authToken" className="block text-sm font-medium mb-1">认证 Token</label>
           <div className="relative">
@@ -279,6 +346,7 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
               className="w-full border rounded px-3 py-2 text-sm pr-10"
               value={draft.authToken ?? ''} 
               onChange={e => setDraft(d => ({ ...d, authToken: e.target.value }))}
+              disabled={Boolean(draft.serverNodeId)}
             />
             <button 
               type="button" 
@@ -328,6 +396,10 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
           </div>
         )}
 
+        <div className="pt-1">
+          <ProfileTagEditor tags={tags} onChange={setTags} />
+        </div>
+
         <div className="bg-blue-50 text-blue-800 p-3 rounded text-sm">
           {scenario.tips}
         </div>
@@ -371,7 +443,7 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
                 variant="outline" 
                 size="sm" 
                 className="w-full"
-                onClick={() => onSwitchToAdvanced(buildDraft())}
+                onClick={() => onSwitchToAdvanced(buildDraft(), coreId)}
               >
                 转为高级编辑模式
               </Button>

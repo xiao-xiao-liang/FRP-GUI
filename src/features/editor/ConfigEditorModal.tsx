@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FrpcConfig, FrpsConfig, FrpCore, Profile, ProxyRule, VisitorRule } from '../../types/frp';
+import { FrpcConfig, FrpsConfig, FrpCore, FrpServerNode, Profile, ProxyRule, VisitorRule } from '../../types/frp';
 import { Button } from '../../components/ui/button';
 import { FeishuSelect } from '../../components/ui/feishu-select';
 import { FeishuDialog } from '../../components/ui/FeishuDialog';
@@ -16,6 +16,8 @@ import {
 } from '../../components/icons';
 import { ChevronDown, Zap } from 'lucide-react';
 import { feishuToast } from '../../components/ui/FeishuToast';
+import { ProfileTagEditor } from '../profiles/ProfileTagEditor';
+import { normalizeTags } from '../../services/profile-organization';
 
 type FrpLogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 type FrpLogConfig = {
@@ -46,6 +48,8 @@ export interface ConfigEditorModalProps {
   onSave: (profile: Profile) => void;
   editingProfile: Profile | null;
   activeCore: FrpCore | null;
+  cores?: FrpCore[];
+  serverNodes?: FrpServerNode[];
 }
 
 export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
@@ -54,12 +58,19 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
   onSave,
   editingProfile,
   activeCore,
+  cores = [],
+  serverNodes = [],
 }) => {
   const [viewMode, setViewMode] = useState<'wizard' | 'advanced'>('wizard');
   const [activeTab, setActiveTab] = useState<'form' | 'toml'>('form');
   const [profileName, setProfileName] = useState('');
   const [profileDescription, setProfileDescription] = useState('');
   const [profileType, setProfileType] = useState<'frpc' | 'frps'>('frpc');
+  const [tags, setTags] = useState<string[]>([]);
+  const [coreId, setCoreId] = useState('');
+  const downloadedCoreOptions = cores
+    .filter((core) => Boolean(core.path) && core.status !== 'not_downloaded')
+    .map((core) => ({ value: core.id, label: `${core.version} · ${core.os}/${core.arch}` }));
   
   // FRPC 配置状态
   const [serverAddr, setServerAddr] = useState('118.195.146.161');
@@ -115,6 +126,8 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
       setProfileDescription(editingProfile.description || '');
       setProfileType(editingProfile.type);
       setRawToml(editingProfile.rawToml);
+      setTags(editingProfile.tags ? [...editingProfile.tags] : []);
+      setCoreId(editingProfile.coreId || '');
 
       if (editingProfile.type === 'frpc') {
         const conf = editingProfile.config as FrpcConfig;
@@ -157,13 +170,15 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
         }
       ]);
       setVisitors([]);
+      setTags([]);
+      setCoreId('');
     }
     setTomlError(null);
     setActiveTab('form');
   }, [editingProfile, isOpen]);
 
   // 从草稿切换到高级编辑模式
-  const handleSwitchToAdvanced = (draft: ScenarioFormValues) => {
+  const handleSwitchToAdvanced = (draft: ScenarioFormValues, selectedCoreId?: string) => {
     setViewMode('advanced');
     setProfileName(draft.name);
     setProfileDescription('');
@@ -173,7 +188,9 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
     setAuthToken(draft.authToken || '');
     setProtocol(draft.transportProtocol ?? 'tcp');
     setTlsEnable(draft.tlsEnable ?? false);
+    setCoreId(selectedCoreId || '');
     setLogConfig({ level: 'info' });
+    setTags(draft.tags ? [...draft.tags] : []);
 
     const proxy: ProxyRule = {
       name: draft.proxyName || 'service-1',
@@ -365,6 +382,10 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
       feishuToast.warning('请输入配置方案名称');
       return;
     }
+    if (profileType === 'frpc' && !coreId) {
+      feishuToast.warning('请选择已下载的 FRP 核心版本');
+      return;
+    }
 
     let finalConfig: FrpcConfig | FrpsConfig;
     let finalToml = rawToml;
@@ -409,6 +430,7 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
       id: editingProfile?.id || `prof_${Date.now()}`,
       name: profileName,
       type: profileType,
+      coreId: profileType === 'frpc' ? coreId : undefined,
       description: profileDescription,
       config: finalConfig,
       rawToml: finalToml,
@@ -419,6 +441,9 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
         curConns: 0,
         uptimeSeconds: 0,
       },
+      groupId: editingProfile?.groupId,
+      tags: normalizeTags(tags),
+      isPinned: editingProfile?.isPinned ?? false,
       createdAt: editingProfile?.createdAt || Date.now(),
       updatedAt: Date.now(),
     };
@@ -455,6 +480,8 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
       >
         <ScenarioWizard
           activeCore={activeCore}
+          cores={cores}
+          serverNodes={serverNodes}
           onSave={(profile) => {
             onSave(profile);
             onClose();
@@ -591,6 +618,27 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                   containerClassName="h-8"
                 />
               </div>
+
+              {/* 方案标签 */}
+              <ProfileTagEditor tags={tags} onChange={setTags} />
+
+              {profileType === 'frpc' && (
+                <div>
+                  <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
+                    FRP 核心版本 <span className="text-[#F53F3F]">*</span>
+                  </label>
+                  <FeishuSelect
+                    options={downloadedCoreOptions}
+                    value={coreId}
+                    onChange={setCoreId}
+                    placeholder={downloadedCoreOptions.length ? '请选择已下载版本' : '暂无已下载版本'}
+                    disabled={downloadedCoreOptions.length === 0}
+                    size="sm"
+                    className="w-full"
+                  />
+                  <p className="mt-1 text-[11px] text-[#8F959E]">仅展示“FRP 核心管理”中已下载或已导入的版本。</p>
+                </div>
+              )}
             </div>
 
             {/* 分割线 */}
