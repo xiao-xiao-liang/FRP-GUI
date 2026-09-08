@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import QRCode from 'qrcode';
 import { Profile } from '../../types/frp';
+import { serializeFrpcToml, serializeFrpsToml } from '../../services/toml-sync';
+import { buildProfileSharePayload } from '../../services/profile-secrets';
 import { Button } from '../../components/ui/button';
 import { FeishuSelect } from '../../components/ui/feishu-select';
 import { FeishuDialog } from '../../components/ui/FeishuDialog';
@@ -7,6 +10,7 @@ import { FEISHU_FONT_FAMILY } from '../../components/ui/feishu-table';
 import { MobileIcon, CopyIcon, DownloadIcon } from '../../components/icons';
 import { Upload, CheckCircle2 } from 'lucide-react';
 import { feishuToast } from '../../components/ui/FeishuToast';
+import { feishuConfirm } from '../../components/ui/FeishuDialog';
 
 interface SyncModalProps {
   isOpen: boolean;
@@ -26,26 +30,39 @@ export const SyncModal: React.FC<SyncModalProps> = ({
   const [activeProfileId, setActiveProfileId] = useState<string>(selectedProfile?.id || profiles[0]?.id || '');
   const [importJsonText, setImportJsonText] = useState('');
   const [isImportMode, setIsImportMode] = useState(false);
-  const [qrSvg, setQrSvg] = useState<string>('');
+  const [qrDataUrl, setQrDataUrl] = useState<string>('');
 
   const currentProfile = profiles.find((p) => p.id === activeProfileId) || selectedProfile || profiles[0];
 
   useEffect(() => {
-    if (isOpen && currentProfile) {
-      const payload = {
-        app: 'frp-gui',
-        version: '1.0',
-        type: currentProfile.type,
-        name: currentProfile.name,
-        toml: currentProfile.rawToml,
-      };
-      const jsonStr = encodeURIComponent(JSON.stringify(payload));
-      setQrSvg(`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${jsonStr}&color=1F2329&bgcolor=FFFFFF`);
+    let cancelled = false;
+    if (!isOpen || !currentProfile) {
+      setQrDataUrl('');
+      return () => { cancelled = true; };
     }
+
+    setQrDataUrl('');
+    void QRCode.toDataURL(JSON.stringify(buildProfileSharePayload(currentProfile)), {
+      width: 220,
+      margin: 1,
+      color: { dark: '#1F2329', light: '#FFFFFF' },
+    }).then((dataUrl) => {
+      if (!cancelled) setQrDataUrl(dataUrl);
+    }).catch(() => {
+      if (!cancelled) feishuToast.error('二维码生成失败，请使用复制配置代码');
+    });
+    return () => { cancelled = true; };
   }, [isOpen, activeProfileId, currentProfile]);
 
-  const handleCopyConfigJson = () => {
+  const handleCopyConfigJson = async () => {
     if (!currentProfile) return;
+    const confirmed = await feishuConfirm({
+      title: '复制含凭据的配置',
+      content: '复制内容可能包含 Token、密码或访问密钥。请只粘贴到可信设备。',
+      type: 'warning',
+      okText: '确认复制',
+    });
+    if (!confirmed) return;
     const payload = {
       app: 'frp-gui',
       version: '1.0',
@@ -57,7 +74,14 @@ export const SyncModal: React.FC<SyncModalProps> = ({
     feishuToast.success('配置代码已复制到剪贴板');
   };
 
-  const handleExportBackup = () => {
+  const handleExportBackup = async () => {
+    const confirmed = await feishuConfirm({
+      title: '导出含凭据的备份',
+      content: '备份文件可能包含 Token、密码或访问密钥。请加密保存，且不要发送给不可信对象。',
+      type: 'warning',
+      okText: '确认导出',
+    });
+    if (!confirmed) return;
     const dataStr = JSON.stringify(profiles, null, 2);
     const blob = new Blob([dataStr], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -79,13 +103,15 @@ export const SyncModal: React.FC<SyncModalProps> = ({
       if (Array.isArray(parsed)) {
         onImportProfiles(parsed);
         feishuToast.success(`成功导入 ${parsed.length} 个方案`);
-      } else if (parsed.app === 'frp-gui' && parsed.toml) {
+      } else if (parsed.app === 'frp-gui' && (parsed.toml || parsed.config)) {
+        const type = parsed.type === 'frps' ? 'frps' : 'frpc';
+        const config = parsed.config || {};
         const newProf: Profile = {
           id: `imported_${Date.now()}`,
           name: parsed.name || '导入方案',
-          type: parsed.type || 'frpc',
-          config: parsed.config || {},
-          rawToml: parsed.toml,
+          type,
+          config,
+          rawToml: parsed.toml || (type === 'frps' ? serializeFrpsToml(config) : serializeFrpcToml(config)),
           status: 'stopped',
           stats: { bytesIn: 0, bytesOut: 0, curConns: 0, uptimeSeconds: 0 },
           createdAt: Date.now(),
@@ -156,9 +182,9 @@ export const SyncModal: React.FC<SyncModalProps> = ({
 
             {/* 二维码展示 */}
             <div className="flex flex-col items-center justify-center p-5 bg-[#F8F9FA] rounded-[8px] border border-[#DEE0E3]">
-              {qrSvg ? (
+              {qrDataUrl ? (
                 <div className="bg-white p-3.5 rounded-[8px] border border-[#DEE0E3] shadow-xs">
-                  <img src={qrSvg} alt="QR Code" className="w-48 h-48 block object-contain" />
+                  <img src={qrDataUrl} alt="QR Code" className="w-48 h-48 block object-contain" />
                 </div>
               ) : (
                 <div className="w-48 h-48 flex items-center justify-center bg-white rounded-[8px] border text-xs text-[#8F959E]">
@@ -172,7 +198,7 @@ export const SyncModal: React.FC<SyncModalProps> = ({
                   Android 移动端扫码即用
                 </div>
                 <p className="text-[12px] text-[#8F959E] mt-0.5 max-w-xs">
-                  手机端 FRP-GUI 扫码即可同步导入此穿透配置
+                  手机端扫码可导入不含凭据的连接配置；认证 Token 需在目标设备单独填写
                 </p>
               </div>
             </div>

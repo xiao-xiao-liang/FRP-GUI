@@ -295,20 +295,26 @@ class FeishuToastManager {
   }
 
   private ensureContainer() {
-    if (typeof window === "undefined" || this.containerMounted) return;
+    if (typeof window === "undefined" || this.listeners.size > 0) return;
 
     const existingContainer = document.getElementById("feishu-toast-root-container");
-    if (existingContainer) {
-      this.containerMounted = true;
+    if (existingContainer && this.containerMounted) {
       return;
     }
 
-    const div = document.createElement("div");
+    const div = existingContainer || document.createElement("div");
     div.id = "feishu-toast-root-container";
-    document.body.appendChild(div);
+    if (!existingContainer) {
+      document.body.appendChild(div);
+    }
     this.root = createRoot(div);
     this.root.render(<FeishuToastContainer />);
     this.containerMounted = true;
+  }
+
+  public clear() {
+    this.toasts = [];
+    this.notify();
   }
 
   public show(options: FeishuToastOptions): string {

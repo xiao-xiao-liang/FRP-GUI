@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { LogDashboard } from './LogDashboard';
 import { isTauriEnv } from '../../services/ipc';
@@ -184,5 +184,49 @@ describe('LogDashboard (日志监控组件)', () => {
     const searchInput = screen.getByPlaceholderText('搜索日志...');
     await user.type(searchInput, 'critical error');
     expect(await screen.findByText('critical error at line 1999')).toBeInTheDocument();
+  });
+
+  it('自动换行时按实际测得的可变行高定位，并保持虚拟渲染', async () => {
+    vi.mocked(isTauriEnv).mockReturnValue(true);
+    const originalResizeObserver = globalThis.ResizeObserver;
+    class MockResizeObserver {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+
+      observe(target: Element) {
+        this.callback(
+          [{ target, contentRect: { height: 84 } } as ResizeObserverEntry],
+          this as unknown as ResizeObserver,
+        );
+      }
+
+      disconnect() {}
+      unobserve() {}
+    }
+    globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+
+    try {
+      const logs = Array.from({ length: 2000 }, (_, index) => ({
+        id: `wrapped-${index}`,
+        sequence: index + 1,
+        profileId: 'p1',
+        profileName: 'p1',
+        timestamp: '10:00:00',
+        level: 'info' as const,
+        message: `这是一条会换行的长日志 ${'content '.repeat(30)}`,
+        raw: 'wrapped log',
+      }));
+      render(<LogDashboard profiles={[makeProfile({ id: 'p1' })]} logs={logs} onClearLogs={vi.fn()} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('runtime-log-list')).toHaveAttribute(
+          'data-virtualization',
+          'variable-height',
+        );
+        expect(Number.parseFloat(screen.getByTestId('runtime-log-list').style.height)).toBeGreaterThan(56000);
+      });
+      expect(screen.getAllByTestId(/runtime-log-message-/).length).toBeLessThan(60);
+    } finally {
+      globalThis.ResizeObserver = originalResizeObserver;
+    }
   });
 });

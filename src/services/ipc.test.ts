@@ -9,8 +9,19 @@ import {
   isTauriEnv,
   inspectLocalFrpcCore,
   pickCoreFileNative,
+  pickDirectoryNative,
+  scanLocalFrpcCores,
+  downloadAndExtractCore,
+  startCoreDownload,
+  listCoreDownloadTasks,
+  subscribeCoreDownloadProgress,
+  loadProfileSecret,
+  storeProfileSecret,
+  syncAppSettings,
+  exitDesktopApp,
   _resetRuntimeEventBridgeForTest,
   sanitizeRuntimeText,
+  fetchGitHubReleases,
 } from './ipc';
 import { FrpCore, Profile } from '../types/frp';
 
@@ -310,6 +321,135 @@ describe('IPC Runtime Contract and Event Bridge', () => {
     });
   });
 
+  it('桌面端核心下载保留官方资产身份，并将镜像选择独立传给 Tauri', async () => {
+    vi.mocked(isTauriEnv).mockReturnValue(true);
+    (window as any).__MOCK_TAURI_ENV__ = true;
+    const mockInvoke = vi.fn().mockResolvedValue({
+      success: false,
+      exePath: '',
+      targetDir: 'D:/frp',
+      sizeBytes: 0,
+      version: 'v0.61.1',
+      os: 'windows',
+      arch: 'amd64',
+    });
+    (window as any).__TAURI__ = { core: { invoke: mockInvoke } };
+
+    await downloadAndExtractCore({
+      releaseTag: 'v0.61.1',
+      assetName: 'frp_0.61.1_windows_amd64.zip',
+      mirror: 'ghproxy',
+      targetDir: 'D:/frp',
+      version: 'v0.61.1',
+      targetOs: 'windows',
+      targetArch: 'amd64',
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith('download_and_extract_core', {
+      releaseTag: 'v0.61.1',
+      assetName: 'frp_0.61.1_windows_amd64.zip',
+      mirror: 'ghproxy',
+      targetDir: 'D:/frp',
+      version: 'v0.61.1',
+      targetOs: 'windows',
+      targetArch: 'amd64',
+    });
+  });
+
+  it('桌面端下载任务使用严格请求契约，并可订阅进度事件', async () => {
+    vi.mocked(isTauriEnv).mockReturnValue(true);
+    (window as any).__MOCK_TAURI_ENV__ = true;
+    const mockInvoke = vi.fn()
+      .mockResolvedValueOnce({ taskId: 'core-1', phase: 'downloading' })
+      .mockResolvedValueOnce([]);
+    (window as any).__TAURI__ = { core: { invoke: mockInvoke } };
+    const listener = vi.fn();
+
+    await startCoreDownload({
+      releaseTag: 'v0.71.0', assetName: 'frp_0.71.0_windows_amd64.zip', mirror: 'official',
+      targetDir: 'D:/frp', targetOs: 'windows', targetArch: 'amd64',
+    });
+    await listCoreDownloadTasks();
+    const stop = await subscribeCoreDownloadProgress(listener);
+    eventHandlers.get('core-download-progress')?.({
+      event: 'core-download-progress', id: 3,
+      payload: { taskId: 'core-1', phase: 'extracting', extractedEntries: 4, totalEntries: 7 },
+    });
+
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, 'start_core_download', {
+      request: expect.objectContaining({ releaseTag: 'v0.71.0', targetArch: 'amd64' }),
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, 'list_core_download_tasks');
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({ phase: 'extracting', extractedEntries: 4 }));
+    await stop();
+  });
+
+  it('方案机密只经桌面 IPC 写入和读取系统凭据库', async () => {
+    vi.mocked(isTauriEnv).mockReturnValue(true);
+    (window as any).__MOCK_TAURI_ENV__ = true;
+    const mockInvoke = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce('{"rawToml":"[auth]\\ntoken = \\"secret\\""}');
+    (window as any).__TAURI__ = { core: { invoke: mockInvoke } };
+
+    await storeProfileSecret('frp-gui/profile/p1', '{"rawToml":"secret"}');
+    await expect(loadProfileSecret('frp-gui/profile/p1')).resolves.toContain('rawToml');
+
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, 'store_profile_secret', {
+      reference: 'frp-gui/profile/p1', secret: '{"rawToml":"secret"}',
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, 'load_profile_secret', {
+      reference: 'frp-gui/profile/p1',
+    });
+  });
+
+  it('桌面端仅将受支持的设置和显式退出请求发送给原生层', async () => {
+    vi.mocked(isTauriEnv).mockReturnValue(true);
+    (window as any).__MOCK_TAURI_ENV__ = true;
+    const mockInvoke = vi.fn().mockResolvedValue(undefined);
+    (window as any).__TAURI__ = { core: { invoke: mockInvoke } };
+
+    await syncAppSettings({
+      closeBehavior: 'hide_to_tray',
+      launchBehavior: 'show_window',
+      confirmExitWhenRunning: true,
+      profileSort: 'pinned_updated',
+    });
+    await exitDesktopApp();
+
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, 'update_app_settings', {
+      settings: {
+        closeBehavior: 'hide_to_tray',
+        launchBehavior: 'show_window',
+        confirmExitWhenRunning: true,
+        profileSort: 'pinned_updated',
+      },
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, 'exit_desktop_app');
+  });
+
+  it('浏览器预览阻断核心下载，且绝不调用 Vite 下载中间件', async () => {
+    vi.mocked(isTauriEnv).mockReturnValue(false);
+    (window as any).__MOCK_TAURI_ENV__ = false;
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy;
+
+    await expect(downloadAndExtractCore({
+      releaseTag: 'v0.61.1',
+      assetName: 'frp_0.61.1_windows_amd64.zip',
+      mirror: 'ghproxy',
+      targetDir: 'D:/frp',
+      version: 'v0.61.1',
+      targetOs: 'windows',
+      targetArch: 'amd64',
+    })).resolves.toEqual(expect.objectContaining({
+      success: false,
+      error: '浏览器预览不能下载本机 FRP 核心，请在 FRP-GUI 桌面端操作',
+    }));
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('单例桥接：多次调用 subscribeRuntimeEvents 仅注册一次原生监听，各订阅者独立取消，最后全部取消时恰好调用一次原生 unlisten', async () => {
     vi.mocked(isTauriEnv).mockReturnValue(true);
     (window as any).__MOCK_TAURI_ENV__ = true;
@@ -515,6 +655,32 @@ describe('IPC Runtime Contract and Event Bridge', () => {
     });
   });
 
+  describe('核心目录扫描', () => {
+    it('桌面端将选择的目录以白名单参数传给 scan_local_frpc_cores', async () => {
+      vi.mocked(isTauriEnv).mockReturnValue(true);
+      (window as any).__MOCK_TAURI_ENV__ = true;
+      const mockInvoke = vi.fn().mockResolvedValue({ recognized: [], skipped: [] });
+      (window as any).__TAURI__ = { core: { invoke: mockInvoke } };
+
+      await expect(scanLocalFrpcCores('D:\\frp-archives')).resolves.toEqual({ recognized: [], skipped: [] });
+      expect(mockInvoke).toHaveBeenCalledWith('scan_local_frpc_cores', { directoryPath: 'D:\\frp-archives' });
+    });
+
+    it('浏览器预览阻断目录扫描，不调用目录选择或 IPC', async () => {
+      vi.mocked(isTauriEnv).mockReturnValue(false);
+      (window as any).__MOCK_TAURI_ENV__ = false;
+      const fetchSpy = vi.fn();
+      globalThis.fetch = fetchSpy;
+
+      await expect(scanLocalFrpcCores('D:\\frp-archives')).resolves.toMatchObject({
+        recognized: [],
+        error: '浏览器预览不能扫描本机 FRP 文件夹，请在 FRP-GUI 桌面端操作',
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(pickDirectoryNative).toBeDefined();
+    });
+  });
+
   describe('Task 2: startProfileInstance structured failureKind handling', () => {
     it('正确白名单映射 core_invalid, startup, early_exit 失败类别', async () => {
       vi.mocked(isTauriEnv).mockReturnValue(true);
@@ -589,5 +755,49 @@ describe('IPC Runtime Contract and Event Bridge', () => {
       expect(result.failureKind).toBeUndefined();
     });
   });
-});
 
+  describe('fetchGitHubReleases downloadCount 汇总与解析', () => {
+    it('成功调用 GitHub API 时能够正确计算每个 Release 资产的 downloadCount 总和', async () => {
+      const mockReleases = [
+        {
+          tag_name: 'v0.71.0',
+          name: 'Release v0.71.0',
+          published_at: '2026-08-14T00:00:00Z',
+          assets: [
+            { name: 'frp_0.71.0_windows_amd64.zip', size: 1000, download_count: 3200, browser_download_url: 'https://example.com/win' },
+            { name: 'frp_0.71.0_linux_amd64.tar.gz', size: 1000, download_count: 1800, browser_download_url: 'https://example.com/linux' },
+          ],
+        },
+      ];
+
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue(mockReleases),
+      } as any);
+
+      try {
+        const res = await fetchGitHubReleases();
+        expect(res).toHaveLength(1);
+        expect(res[0].tag).toBe('v0.71.0');
+        expect(res[0].downloadCount).toBe(5000);
+        expect(res[0].assets[0].downloadCount).toBe(3200);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('API 请求受限或失败时，使用备用静态列表并附带默认 downloadCount', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error('Rate limited'));
+
+      try {
+        const res = await fetchGitHubReleases();
+        expect(res.length).toBeGreaterThan(0);
+        expect(res[0].downloadCount).toBeGreaterThan(0);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  });
+});

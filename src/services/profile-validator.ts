@@ -1,12 +1,14 @@
 import { FrpcConfig, FrpCore, Profile, ProxyRule } from '../types/frp';
 import { ScenarioId } from './presets';
 import { serializeFrpcToml } from './toml-sync';
+import { normalizeTags } from './profile-organization';
 
 export interface ScenarioFormValues {
   name: string;
   serverAddr: string;
   serverPort: number;
   authToken?: string;
+  serverNodeId?: string;
   scenarioId: ScenarioId;
   variantId?: string;
   proxyName: string;
@@ -19,6 +21,7 @@ export interface ScenarioFormValues {
   useCompression?: boolean;
   transportProtocol?: 'tcp' | 'kcp' | 'quic' | 'websocket' | 'wss';
   tlsEnable?: boolean;
+  tags?: string[];
 }
 
 export interface ValidationResult {
@@ -110,7 +113,10 @@ export function buildScenarioProfile(values: ScenarioFormValues): Profile {
     status: 'stopped',
     config,
     rawToml,
+    serverNodeId: values.serverNodeId,
     stats: { bytesIn: 0, bytesOut: 0, curConns: 0, uptimeSeconds: 0 },
+    tags: normalizeTags(values.tags),
+    isPinned: false,
     createdAt: now,
     updatedAt: now,
   };

@@ -34,6 +34,10 @@ export interface FeishuDialogProps {
   keyboard?: boolean;
   /** 确认按钮是否为高危红色按钮，默认由 type === 'danger' 决定 */
   danger?: boolean;
+  /** 确认按钮是否禁用 */
+  okButtonDisabled?: boolean;
+  /** 外部控制的确认按钮 loading 状态 */
+  confirmLoading?: boolean;
   /** 自定义底部操作栏（传 null 则隐藏 footer） */
   footer?: React.ReactNode;
   /** 确认回调（支持返回 Promise 自动进入 loading 态） */
@@ -116,6 +120,8 @@ export const FeishuDialog: React.FC<FeishuDialogProps> = ({
   maskClosable = true,
   keyboard = true,
   danger,
+  okButtonDisabled,
+  confirmLoading,
   footer,
   onOk,
   onCancel,
@@ -129,6 +135,8 @@ export const FeishuDialog: React.FC<FeishuDialogProps> = ({
   const isDanger = danger !== undefined ? danger : type === "danger";
   const shouldShowCancel = showCancel !== undefined ? showCancel : type !== "info";
   const defaultOkText = okText || (isDanger ? "删除" : "确定");
+  const isOkDisabled = okLoading || Boolean(confirmLoading) || Boolean(okButtonDisabled);
+  const isOkLoading = okLoading || Boolean(confirmLoading);
 
   // 图标显示策略：官方 danger 和 confirm 对话框默认纯净无图标；info/warning/success 默认带图标
   const displayIcon =
@@ -189,6 +197,7 @@ export const FeishuDialog: React.FC<FeishuDialogProps> = ({
   };
 
   const handleOkClick = async () => {
+    if (isOkDisabled) return;
     if (!onOk) {
       onCancel?.();
       return;
@@ -282,8 +291,8 @@ export const FeishuDialog: React.FC<FeishuDialogProps> = ({
                     <button
                       type="button"
                       onClick={onCancel}
-                      disabled={okLoading}
-                      className="ud__button ud__button--outlined inline-flex h-[32px] min-w-[80px] px-[11px] items-center justify-center rounded-[6px] border border-[#DEE0E3] bg-white text-[14px] font-normal text-[#1F2329] shadow-none transition-colors hover:bg-[#F2F3F5] active:bg-[#E5E6EB] cursor-pointer select-none disabled:opacity-50"
+                      disabled={isOkDisabled}
+                      className="ud__button ud__button--outlined inline-flex h-[32px] min-w-[80px] px-[11px] items-center justify-center rounded-[6px] border border-[#DEE0E3] bg-white text-[14px] font-normal text-[#1F2329] shadow-none transition-colors hover:bg-[#F2F3F5] active:bg-[#E5E6EB] cursor-pointer select-none disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {cancelText}
                     </button>
@@ -293,14 +302,14 @@ export const FeishuDialog: React.FC<FeishuDialogProps> = ({
                   <button
                     type="button"
                     onClick={handleOkClick}
-                    disabled={okLoading}
-                    className={`ud__button inline-flex h-[32px] min-w-[80px] px-[11px] items-center justify-center rounded-[6px] text-[14px] font-normal text-white shadow-none transition-colors cursor-pointer select-none disabled:opacity-50 ${
+                    disabled={isOkDisabled}
+                    className={`ud__button inline-flex h-[32px] min-w-[80px] px-[11px] items-center justify-center rounded-[6px] text-[14px] font-normal text-white shadow-none transition-colors cursor-pointer select-none disabled:opacity-50 disabled:cursor-not-allowed ${
                       isDanger
                         ? "bg-[#F54A45] hover:bg-[#FF7570] active:bg-[#E22E28]"
                         : "bg-[#3370FF] hover:bg-[#2860E1] active:bg-[#1F4EC9]"
                     }`}
                   >
-                    {okLoading ? (
+                    {isOkLoading ? (
                       <span className="flex items-center gap-1.5">
                         <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
                           <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
@@ -351,17 +360,18 @@ class FeishuDialogManager {
   }
 
   private ensureContainer() {
-    if (typeof window === "undefined" || this.containerMounted) return;
+    if (typeof window === "undefined") return;
 
     const existing = document.getElementById("feishu-dialog-root-container");
-    if (existing) {
-      this.containerMounted = true;
+    if (existing && this.containerMounted) {
       return;
     }
 
-    const div = document.createElement("div");
+    const div = existing || document.createElement("div");
     div.id = "feishu-dialog-root-container";
-    document.body.appendChild(div);
+    if (!existing) {
+      document.body.appendChild(div);
+    }
     this.root = createRoot(div);
     this.root.render(<FeishuDialogPortalContainer />);
     this.containerMounted = true;

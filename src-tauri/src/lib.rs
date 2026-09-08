@@ -1,7 +1,12 @@
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
@@ -9,6 +14,9 @@ pub mod credential_store;
 pub mod server_preflight;
 pub mod frps_deployment;
 pub mod frpc_runtime;
+pub mod app_lifecycle;
+pub mod core_import;
+pub mod core_download;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +33,24 @@ pub struct ProcessStartResult {
 pub struct LocalFrpcCoreInspection {
     pub version: String,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RecognizedLocalFrpcCore {
+    path: String,
+    version: String,
+    os: String,
+    arch: String,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct LocalFrpcCoreScanResult {
+    recognized: Vec<RecognizedLocalFrpcCore>,
+    skipped: Vec<core_import::SkippedLocalCore>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -58,6 +84,115 @@ pub struct LogPayload {
 
 pub struct AppState {
     pub frpc_manager: Arc<frpc_runtime::FrpcRuntimeManager>,
+    pub core_download_manager: Arc<core_download::CoreDownloadManager>,
+    pub app_settings: Arc<Mutex<app_lifecycle::AppSettings>>,
+    pub tray_available: Arc<Mutex<bool>>,
+    pub exit_shutdown_started: Arc<AtomicBool>,
+}
+
+#[tauri::command]
+async fn start_core_download(
+    request: core_download::CoreDownloadRequest,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<core_download::CoreDownloadTask, String> {
+    let task = state.core_download_manager.start(request)?;
+    let manager = state.core_download_manager.clone();
+    let task_id = task.task_id.clone();
+    tauri::async_runtime::spawn(async move { core_download::run_task(manager, app, task_id).await; });
+    Ok(task)
+}
+
+#[tauri::command]
+fn list_core_download_tasks(state: State<'_, AppState>) -> Vec<core_download::CoreDownloadTask> {
+    state.core_download_manager.list()
+}
+
+#[tauri::command]
+async fn resume_core_download(task_id: String, state: State<'_, AppState>, app: AppHandle) -> Result<core_download::CoreDownloadTask, String> {
+    let task = state.core_download_manager.resume(&task_id)?;
+    let manager = state.core_download_manager.clone();
+    tauri::async_runtime::spawn(async move { core_download::run_task(manager, app, task_id).await; });
+    Ok(task)
+}
+
+#[tauri::command]
+fn cancel_core_download(task_id: String, state: State<'_, AppState>) -> Result<(), String> { state.core_download_manager.cancel(&task_id) }
+
+#[tauri::command]
+fn clear_core_download_task(task_id: String, state: State<'_, AppState>) -> Result<(), String> { state.core_download_manager.clear(&task_id) }
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn stop_all_profiles(app: &AppHandle) {
+    let manager = app.state::<AppState>().frpc_manager.clone();
+    tauri::async_runtime::spawn(async move {
+        manager.shutdown_all().await;
+    });
+}
+
+fn exit_after_stopping_profiles(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if !app_lifecycle::begin_exit_shutdown(&state.exit_shutdown_started) {
+        return;
+    }
+    let app_handle = app.clone();
+    let manager = state.frpc_manager.clone();
+    tauri::async_runtime::spawn(async move {
+        manager.shutdown_all().await;
+        app_handle.exit(0);
+    });
+}
+
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, app_lifecycle::TRAY_MENU_OPEN, "打开主窗口", true, None::<&str>)?;
+    let stop_all = MenuItem::with_id(app, app_lifecycle::TRAY_MENU_STOP_ALL, "停止全部连接", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let exit = MenuItem::with_id(app, app_lifecycle::TRAY_MENU_EXIT, "退出应用", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &stop_all, &separator, &exit])?;
+
+    let mut tray = TrayIconBuilder::with_id("frp-gui-tray")
+        .menu(&menu)
+        .tooltip("FRP-GUI Pro")
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match app_lifecycle::tray_menu_action(event.id().as_ref()) {
+            Some(app_lifecycle::TrayMenuAction::OpenMainWindow) => show_main_window(app),
+            Some(app_lifecycle::TrayMenuAction::StopAllProfiles) => stop_all_profiles(app),
+            Some(app_lifecycle::TrayMenuAction::ExitAfterStoppingProfiles) => {
+                exit_after_stopping_profiles(app);
+            }
+            None => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if matches!(event, TrayIconEvent::Click { button: MouseButton::Left, .. } | TrayIconEvent::DoubleClick { button: MouseButton::Left, .. }) {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray = tray.icon(icon);
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
+/// 在桌面端启动前将已部署 FRPS 节点的 Token 写入临时 FRPC 配置。
+/// Token 只在后端内存与子进程配置文件中出现，绝不返回 WebView。
+fn inject_server_node_token(toml_content: &str, token: &str) -> Result<String, String> {
+    let mut document = toml_content
+        .parse::<toml::Table>()
+        .map_err(|_| "方案 TOML 格式无效，无法注入节点凭据".to_string())?;
+    let auth = document
+        .entry("auth".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| "方案 auth 配置格式无效".to_string())?;
+    auth.insert("token".to_string(), toml::Value::String(token.to_string()));
+    toml::to_string(&document).map_err(|_| "无法生成临时 FRPC 配置".to_string())
 }
 
 #[tauri::command]
@@ -75,6 +210,64 @@ async fn inspect_frpc_core(file_path: String) -> LocalFrpcCoreInspection {
 }
 
 #[tauri::command]
+async fn scan_local_frpc_cores(directory_path: String) -> LocalFrpcCoreScanResult {
+    let discovery = match tokio::task::spawn_blocking(move || {
+        core_import::discover_frpc_candidates(std::path::Path::new(&directory_path))
+    })
+    .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
+            return LocalFrpcCoreScanResult {
+                recognized: Vec::new(),
+                skipped: Vec::new(),
+                error: Some(error),
+            };
+        }
+        Err(_) => {
+            return LocalFrpcCoreScanResult {
+                recognized: Vec::new(),
+                skipped: Vec::new(),
+                error: Some("扫描本地 FRP 文件夹任务异常中断".to_string()),
+            };
+        }
+    };
+
+    let platform = get_system_platform();
+    let mut recognized = Vec::new();
+    let mut skipped = discovery.skipped;
+
+    for candidate in discovery.candidates {
+        match frpc_runtime::inspect_frpc_executable(candidate.to_string_lossy().as_ref()).await {
+            Ok(version) => {
+                let size_bytes = std::fs::metadata(&candidate).map(|metadata| metadata.len()).unwrap_or(0);
+                recognized.push(RecognizedLocalFrpcCore {
+                    path: candidate.to_string_lossy().to_string(),
+                    version,
+                    os: platform.os.clone(),
+                    arch: platform.arch.clone(),
+                    size_bytes,
+                });
+            }
+            Err(error) => skipped.push(core_import::SkippedLocalCore {
+                file_name: candidate
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("frpc")
+                    .to_string(),
+                reason: error,
+            }),
+        }
+    }
+
+    LocalFrpcCoreScanResult {
+        recognized,
+        skipped,
+        error: None,
+    }
+}
+
+#[tauri::command]
 async fn start_profile(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -82,11 +275,23 @@ async fn start_profile(
     _profile_type: String,
     toml_content: String,
     core_path: String,
+    server_credential_ref: Option<String>,
 ) -> Result<ProcessStartResult, String> {
+    let effective_toml = if let Some(reference) = server_credential_ref {
+        let credentials = credential_store::load_frps_deployment_credentials(&reference)
+            .map_err(|_| "无法读取已部署 FRPS 节点的安全凭据".to_string())?;
+        let token = credentials
+            .frp_token
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "所选 FRPS 节点没有可用的认证 Token".to_string())?;
+        inject_server_node_token(&toml_content, &token)?
+    } else {
+        toml_content
+    };
     let sink: Arc<dyn frpc_runtime::RuntimeEventSink> = Arc::new(frpc_runtime::TauriEventSink::new(app));
     let res = state
         .frpc_manager
-        .start_profile(Some(sink), profile_id, toml_content, core_path)
+        .start_profile(Some(sink), profile_id, effective_toml, core_path)
         .await;
 
     Ok(ProcessStartResult {
@@ -132,6 +337,38 @@ async fn get_runtime_logs(
     profile_id: Option<String>,
 ) -> Result<Vec<frpc_runtime::FrpcRuntimeLogEvent>, String> {
     state.frpc_manager.get_runtime_logs(profile_id).await
+}
+
+#[tauri::command]
+fn update_app_settings(
+    state: State<'_, AppState>,
+    settings: app_lifecycle::AppSettings,
+) -> Result<(), String> {
+    let mut stored = state
+        .app_settings
+        .lock()
+        .map_err(|_| "应用设置状态不可用".to_string())?;
+    *stored = settings;
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_main_window(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+}
+
+#[tauri::command]
+async fn exit_desktop_app(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    if app_lifecycle::begin_exit_shutdown(&state.exit_shutdown_started) {
+        let manager = state.frpc_manager.clone();
+        tauri::async_runtime::spawn(async move {
+            manager.shutdown_all().await;
+            app.exit(0);
+        });
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -437,6 +674,8 @@ pub struct DownloadCoreResult {
     pub error: Option<String>,
 }
 
+pub const MAX_CORE_ARCHIVE_BYTES: usize = 100 * 1024 * 1024;
+
 pub fn validate_official_download_url(url: &str) -> Result<(&str, &str), String> {
     const PREFIX: &str = "https://github.com/fatedier/frp/releases/download/";
     if !url.starts_with(PREFIX) {
@@ -452,17 +691,83 @@ pub fn validate_official_download_url(url: &str) -> Result<(&str, &str), String>
     Ok((tag, asset_name))
 }
 
+pub fn build_official_core_download_url(release_tag: &str, asset_name: &str) -> Result<String, String> {
+    if !release_tag.starts_with('v')
+        || !release_tag[1..].split('.').all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        || !asset_name.starts_with("frp_")
+        || !asset_name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    {
+        return Err("非法的 FRP Release 版本或资产名".to_string());
+    }
+    let url = format!("https://github.com/fatedier/frp/releases/download/{release_tag}/{asset_name}");
+    validate_official_download_url(&url)?;
+    Ok(url)
+}
+
+pub fn build_core_download_url(official_url: &str, mirror: &str) -> Result<String, String> {
+    validate_official_download_url(official_url)?;
+
+    match mirror {
+        "official" => Ok(official_url.to_string()),
+        "ghproxy" => Ok(format!("https://ghproxy.net/{official_url}")),
+        "fastgit" => Ok(official_url.replacen(
+            "https://github.com",
+            "https://download.fastgit.org",
+            1,
+        )),
+        _ => Err("不支持的核心下载镜像".to_string()),
+    }
+}
+
+pub fn append_core_download_chunk(
+    archive: &mut Vec<u8>,
+    hasher: &mut sha2::Sha256,
+    max_size: usize,
+    chunk: &[u8],
+) -> Result<(), String> {
+    let next_size = archive
+        .len()
+        .checked_add(chunk.len())
+        .ok_or_else(|| "FRP 安装包大小超出安全限制".to_string())?;
+    if next_size > max_size {
+        return Err("FRP 安装包超过 100 MiB 安全限制，已拒绝安装".to_string());
+    }
+
+    use sha2::Digest;
+    hasher.update(chunk);
+    archive.extend_from_slice(chunk);
+    Ok(())
+}
+
 #[tauri::command]
 async fn download_and_extract_core(
-    download_url: String,
+    release_tag: String,
+    asset_name: String,
+    mirror: String,
     target_dir: String,
     version: String,
     target_os: String,
     target_arch: String,
 ) -> Result<DownloadCoreResult, String> {
     // 0. 验证官方下载源
-    let (tag, asset_name) = match validate_official_download_url(&download_url) {
-        Ok(res) => res,
+    let download_url = match build_official_core_download_url(&release_tag, &asset_name) {
+        Ok(url) => url,
+        Err(e) => {
+            return Ok(DownloadCoreResult {
+                success: false,
+                exe_path: String::new(),
+                target_dir: target_dir.clone(),
+                size_bytes: 0,
+                version,
+                os: target_os,
+                arch: target_arch,
+                error: Some(e),
+            });
+        }
+    };
+    let (tag, asset_name) = validate_official_download_url(&download_url).expect("已验证官方 URL");
+    let transport_url = match build_core_download_url(&download_url, &mirror) {
+        Ok(url) => url,
         Err(e) => {
             return Ok(DownloadCoreResult {
                 success: false,
@@ -541,11 +846,11 @@ async fn download_and_extract_core(
     };
 
     // 3. 下载预编译压缩包
-    let response = client
-        .get(&download_url)
+    let mut response = client
+        .get(&transport_url)
         .send()
         .await
-        .map_err(|e| format!("下载 FRP 压缩包失败 ({}): {}", download_url, e))?;
+        .map_err(|e| format!("下载 FRP 压缩包失败: {}", e))?;
 
     if !response.status().is_success() {
         return Ok(DownloadCoreResult {
@@ -560,14 +865,39 @@ async fn download_and_extract_core(
         });
     }
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("读取下载数据流失败: {}", e))?;
+    let mut bytes = Vec::new();
+    let mut hasher = sha2::Sha256::new();
+    loop {
+        let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| format!("读取下载数据流失败: {}", e))?
+        else {
+            break;
+        };
+
+        if let Err(e) = append_core_download_chunk(
+            &mut bytes,
+            &mut hasher,
+            MAX_CORE_ARCHIVE_BYTES,
+            &chunk,
+        ) {
+            return Ok(DownloadCoreResult {
+                success: false,
+                exe_path: String::new(),
+                target_dir: target_dir.clone(),
+                size_bytes: 0,
+                version,
+                os: target_os,
+                arch: target_arch,
+                error: Some(e),
+            });
+        }
+    }
 
     // 4. 计算并校验 SHA-256 哈希
     use sha2::Digest;
-    let actual_hash = format!("{:x}", sha2::Sha256::digest(&bytes));
+    let actual_hash = format!("{:x}", hasher.finalize());
     if actual_hash != expected_hash {
         return Ok(DownloadCoreResult {
             success: false,
@@ -582,7 +912,7 @@ async fn download_and_extract_core(
     }
 
     // 5. 解压归档包
-    let is_zip = download_url.ends_with(".zip") || bytes.starts_with(b"PK");
+    let is_zip = asset_name.ends_with(".zip") || bytes.starts_with(b"PK");
 
     if is_zip {
         let cursor = std::io::Cursor::new(bytes);
@@ -706,25 +1036,86 @@ pub fn run() {
                 .app_local_data_dir()
                 .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, format!("无法获取受控数据目录: {}", e))) as Box<dyn std::error::Error>)?;
             let manager = Arc::new(frpc_runtime::FrpcRuntimeManager::new(local_data_dir));
+            let core_download_manager = Arc::new(core_download::CoreDownloadManager::new(app.path().app_data_dir().map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, format!("无法获取核心下载缓存目录: {}", e))) as Box<dyn std::error::Error>)?.join("core-downloads")));
             app.manage(AppState {
                 frpc_manager: manager,
+                core_download_manager,
+                app_settings: Arc::new(Mutex::new(app_lifecycle::AppSettings::default())),
+                tray_available: Arc::new(Mutex::new(false)),
+                exit_shutdown_started: Arc::new(AtomicBool::new(false)),
             });
+            let tray_available = setup_tray(app).is_ok();
+            let state = app.state::<AppState>();
+            if let Ok(mut available) = state.tray_available.lock() {
+                *available = tray_available;
+            }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let state = window.state::<AppState>();
+                let settings = state
+                    .app_settings
+                    .lock()
+                    .map(|settings| settings.clone())
+                    .unwrap_or_default();
+                let tray_available = state.tray_available.lock().map(|available| *available).unwrap_or(false);
+                api.prevent_close();
+                if app_lifecycle::should_hide_on_close(&settings, tray_available) {
+                    let _ = window.hide();
+                    return;
+                }
+
+                let app_handle = window.app_handle().clone();
+                let manager = state.frpc_manager.clone();
+                tauri::async_runtime::spawn(async move {
+                    let has_running_profile = manager
+                        .get_runtime_states()
+                        .await
+                        .iter()
+                        .any(|profile| matches!(profile.status.as_str(), "running" | "starting"));
+
+                    match app_lifecycle::close_requested_action(
+                        &settings,
+                        tray_available,
+                        has_running_profile,
+                    ) {
+                        app_lifecycle::CloseRequestedAction::RequestAppExitConfirmation => {
+                            let _ = app_handle.emit("app-close-requested", ());
+                        }
+                        app_lifecycle::CloseRequestedAction::ExitAfterStoppingProfiles => {
+                            exit_after_stopping_profiles(&app_handle);
+                        }
+                        app_lifecycle::CloseRequestedAction::HideToTray => {}
+                    }
+                });
+            }
         })
         .invoke_handler(tauri::generate_handler![
             start_profile,
             stop_profile,
             get_runtime_states,
             get_runtime_logs,
+            update_app_settings,
+            hide_main_window,
+            exit_desktop_app,
             test_tcp_connection,
             detect_core_version,
             inspect_frpc_core,
+            scan_local_frpc_cores,
             pick_core_file,
             pick_directory,
             get_system_platform,
-            download_and_extract_core,
+            start_core_download,
+            list_core_download_tasks,
+            resume_core_download,
+            cancel_core_download,
+            clear_core_download_task,
             credential_store::store_server_credential,
             credential_store::delete_server_credentials,
+            credential_store::store_profile_secret,
+            credential_store::load_profile_secret,
+            credential_store::delete_profile_secret,
             run_server_preflight,
             run_frps_operation
         ])
@@ -733,6 +1124,9 @@ pub fn run() {
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
                 let state = app_handle.state::<AppState>();
+                if state.exit_shutdown_started.load(Ordering::Acquire) {
+                    return;
+                }
                 let manager = state.frpc_manager.clone();
                 tauri::async_runtime::block_on(async move {
                     manager.shutdown_all().await;
@@ -744,6 +1138,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
 
     #[test]
     fn test_validate_official_download_url_rejects_non_official() {
@@ -761,5 +1156,56 @@ mod tests {
         .unwrap();
         assert_eq!(tag, "v0.61.1");
         assert_eq!(asset, "frp_0.61.1_windows_amd64.zip");
+    }
+
+    #[test]
+    fn core_download_builds_transport_url_only_from_official_identity_and_known_mirror() {
+        let official_url = "https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_windows_amd64.zip";
+
+        assert_eq!(
+            build_core_download_url(official_url, "ghproxy").unwrap(),
+            format!("https://ghproxy.net/{official_url}"),
+        );
+        assert_eq!(
+            build_core_download_url(official_url, "official").unwrap(),
+            official_url,
+        );
+        assert!(build_core_download_url(official_url, "unknown").is_err());
+        assert!(build_core_download_url("https://example.com/frpc.zip", "ghproxy").is_err());
+    }
+
+    #[test]
+    fn core_download_builds_official_identity_only_from_valid_tag_and_asset() {
+        assert_eq!(
+            build_official_core_download_url(
+                "v0.61.1",
+                "frp_0.61.1_windows_amd64.zip",
+            )
+            .unwrap(),
+            "https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_windows_amd64.zip",
+        );
+        assert!(build_official_core_download_url("latest", "frp_0.61.1_windows_amd64.zip").is_err());
+        assert!(build_official_core_download_url("v0.61.1", "../frpc.zip").is_err());
+    }
+
+    #[test]
+    fn core_download_rejects_archive_larger_than_configured_limit() {
+        let mut archive = Vec::new();
+        let mut hasher = sha2::Sha256::new();
+
+        append_core_download_chunk(&mut archive, &mut hasher, 4, &[1, 2, 3, 4]).unwrap();
+        assert!(append_core_download_chunk(&mut archive, &mut hasher, 4, &[5]).is_err());
+        assert_eq!(archive, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn server_node_token_is_injected_without_exposing_it_to_the_frontend() {
+        let toml = "serverAddr = \"frp.example.test\"\nserverPort = 7000\n\n[[proxies]]\nname = \"ssh\"\ntype = \"tcp\"\nlocalPort = 22\nremotePort = 6022";
+
+        let rendered = inject_server_node_token(toml, "node-token-secret").unwrap();
+        let parsed = rendered.parse::<toml::Table>().unwrap();
+
+        assert_eq!(parsed["auth"]["token"].as_str(), Some("node-token-secret"));
+        assert_eq!(parsed["serverAddr"].as_str(), Some("frp.example.test"));
     }
 }

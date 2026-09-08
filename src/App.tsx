@@ -1,14 +1,27 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, useNavigate, useLocation, useSearchParams, Navigate } from 'react-router-dom';
-import { DiagnosticResult, FrpCore, FrpServerNode, Profile, FrpcRuntimeStateEvent, FrpcFailureKind, FrpcRuntimeLogEvent, LogEntry } from './types/frp';
+import { listen } from '@tauri-apps/api/event';
+import { DiagnosticResult, FrpCore, FrpServerNode, Profile, ProfileGroup, FrpcRuntimeStateEvent, FrpcFailureKind, FrpcRuntimeLogEvent, LogEntry } from './types/frp';
 import { DEFAULT_FRPC_CONFIG, DEFAULT_FRPS_CONFIG, serializeFrpcToml, serializeFrpsToml } from './services/toml-sync';
-import { startProfileInstance, stopProfileInstance, isTauriEnv, getRuntimeStates, getRuntimeLogs, subscribeRuntimeEvents } from './services/ipc';
-import { DashboardOverview } from './features/dashboard/DashboardOverview';
+import { startProfileInstance, stopProfileInstance, isTauriEnv, getRuntimeStates, getRuntimeLogs, subscribeRuntimeEvents, storeProfileSecret, loadProfileSecret, deleteProfileSecret } from './services/ipc';
+import { syncAppSettings, exitDesktopApp, hideMainWindow } from './services/ipc';
+import { parseProfileSecret, profileCredentialReference, sanitizeProfileForStorage, serializeProfileSecret } from './services/profile-secrets';
+import { AppSettings, loadAppSettings, saveAppSettings } from './services/app-settings';
+import {
+  loadProfileGroups,
+  saveProfileGroups,
+  createProfileGroup,
+  renameProfileGroup,
+  deleteProfileGroup,
+  normalizeProfileOrganization,
+  getBatchActionTargets,
+} from './services/profile-organization';
 import { ProfileList } from './features/profiles/ProfileList';
 import { LogDashboard } from './features/logs/LogDashboard';
 import { mergeLogEntries } from './features/logs/logMerger';
 import { CoreManagerPage } from './features/cores/CoreManagerPage';
 import { ServerNodeManagerPage } from './features/servers/ServerNodeManagerPage';
+import { SettingsPage } from './features/settings/SettingsPage';
 import { ConfigEditorModal } from './features/editor/ConfigEditorModal';
 import { SyncModal } from './features/sync/SyncModal';
 import { DiagnosticModal } from './features/diagnostics/DiagnosticModal';
@@ -17,7 +30,7 @@ import {
   RunIcon, StopIcon, DashboardIcon, ServicesIcon, TerminalIcon, 
   PluginIcon, RemoteHostIcon, MobileIcon 
 } from './components/icons';
-import { ChevronRight, MonitorSmartphone } from 'lucide-react';
+import { ChevronRight, MonitorSmartphone, Settings as SettingsIcon } from 'lucide-react';
 import { feishuToast, FeishuToastContainer } from './components/ui/FeishuToast';
 import { feishuConfirm, FeishuDialogPortalContainer } from './components/ui/FeishuDialog';
 import { FEISHU_FONT_FAMILY } from './components/ui/feishu-table';
@@ -173,12 +186,12 @@ export function AppLayout() {
   const [searchParams] = useSearchParams();
 
   // 根据当前 URL 路径精准推导导航激活态
-  const currentNav = useMemo<'dashboard' | 'profiles' | 'logs' | 'cores' | 'servers'>(() => {
-    if (location.pathname.startsWith('/profiles')) return 'profiles';
+  const currentNav = useMemo<'profiles' | 'logs' | 'cores' | 'servers' | 'settings'>(() => {
     if (location.pathname.startsWith('/logs')) return 'logs';
     if (location.pathname.startsWith('/cores')) return 'cores';
     if (location.pathname.startsWith('/servers')) return 'servers';
-    return 'dashboard';
+    if (location.pathname.startsWith('/settings')) return 'settings';
+    return 'profiles';
   }, [location.pathname]);
 
   const [profiles, setProfiles] = useState<Profile[]>(() => {
@@ -195,13 +208,14 @@ export function AppLayout() {
     // 安全归一化：将 localStorage 中残留的 transient 状态 (starting, running, stopping)
     // 安全归一为 stopped，并附带明确提示；同时清空非持久化的运行期 lastWarning
     return initial.map((p) => {
+      const normalizedOrg = normalizeProfileOrganization(p);
       const baseStats = {
-        ...p.stats,
+        ...normalizedOrg.stats,
         lastWarning: undefined,
       };
-      if (p.status === 'starting' || p.status === 'running' || p.status === 'stopping') {
+      if (normalizedOrg.status === 'starting' || normalizedOrg.status === 'running' || normalizedOrg.status === 'stopping') {
         return {
-          ...p,
+          ...normalizedOrg,
           status: 'stopped' as const,
           stats: {
             ...baseStats,
@@ -211,11 +225,14 @@ export function AppLayout() {
         };
       }
       return {
-        ...p,
+        ...normalizedOrg,
         stats: baseStats,
       };
     });
   });
+  const [groups, setGroups] = useState<ProfileGroup[]>(() => loadProfileGroups());
+  const profileSecretWritesRef = useRef<Map<string, string>>(new Map());
+  const restoredProfileSecretsRef = useRef<Set<string>>(new Set());
 
   const [cores, setCores] = useState<FrpCore[]>(() => {
     const cached = localStorage.getItem('frp_gui_cores');
@@ -245,6 +262,8 @@ export function AppLayout() {
   const [activeCoreId, setActiveCoreId] = useState<string>(() => {
     return localStorage.getItem('frp_gui_active_core_id') || '';
   });
+
+  const [appSettings, setAppSettings] = useState<AppSettings>(loadAppSettings);
 
   const [serverNodes, setServerNodes] = useState<FrpServerNode[]>(() => {
     const cached = localStorage.getItem('frp_gui_server_nodes');
@@ -295,7 +314,49 @@ export function AppLayout() {
   };
 
   useEffect(() => {
-    localStorage.setItem('frp_gui_profiles', JSON.stringify(profiles));
+    localStorage.setItem('frp_gui_profiles', JSON.stringify(profiles.map(sanitizeProfileForStorage)));
+  }, [profiles]);
+
+  useEffect(() => {
+    saveProfileGroups(groups);
+  }, [groups]);
+
+  // 完整 TOML 与认证信息仅保存在桌面端系统凭据库；启动时自动迁移旧 localStorage 数据并恢复已保存方案。
+  useEffect(() => {
+    if (!isTauriEnv()) return;
+    let cancelled = false;
+
+    void Promise.all(profiles.map(async (profile) => {
+      const reference = profileCredentialReference(profile.id);
+      if (profile.rawToml.trim()) {
+        const serialized = serializeProfileSecret(profile);
+        if (profileSecretWritesRef.current.get(profile.id) !== serialized) {
+          await storeProfileSecret(reference, serialized);
+          profileSecretWritesRef.current.set(profile.id, serialized);
+        }
+        return null;
+      }
+      if (restoredProfileSecretsRef.current.has(profile.id)) return null;
+      restoredProfileSecretsRef.current.add(profile.id);
+      const stored = await loadProfileSecret(reference);
+      const secret = stored ? parseProfileSecret(stored) : null;
+      return secret ? { id: profile.id, secret } : null;
+    })).then((restored) => {
+      if (cancelled) return;
+      const available = new Map(
+        restored.filter((entry): entry is { id: string; secret: NonNullable<typeof entry>['secret'] } => entry !== null)
+          .map((entry) => [entry.id, entry.secret]),
+      );
+      if (available.size === 0) return;
+      setProfiles((current) => current.map((profile) => {
+        const secret = available.get(profile.id);
+        return secret && !profile.rawToml ? { ...profile, ...secret } : profile;
+      }));
+    }).catch((error) => {
+      console.error('Failed to synchronize profile secrets with the system credential store', error);
+    });
+
+    return () => { cancelled = true; };
   }, [profiles]);
 
   useEffect(() => {
@@ -309,6 +370,43 @@ export function AppLayout() {
   useEffect(() => {
     localStorage.setItem('frp_gui_server_nodes', JSON.stringify(serverNodes));
   }, [serverNodes]);
+
+  const handleAppSettingsChange = useCallback((nextSettings: AppSettings) => {
+    setAppSettings(nextSettings);
+  }, []);
+
+  useEffect(() => {
+    saveAppSettings(appSettings);
+    void syncAppSettings(appSettings).catch((error) => {
+      console.error('Failed to synchronize desktop app settings:', error);
+    });
+  }, [appSettings]);
+
+  useEffect(() => {
+    if (!isTauriEnv() || appSettings.launchBehavior !== 'start_minimized') return;
+    void hideMainWindow().catch((error) => {
+      console.error('Failed to hide the main window on launch:', error);
+    });
+  }, [appSettings.launchBehavior]);
+
+  useEffect(() => {
+    if (!isTauriEnv()) return;
+    let unlisten: (() => void) | undefined;
+    void listen('app-close-requested', async () => {
+      const hasRunningProfile = profiles.some((profile) => profile.status === 'running' || profile.status === 'starting');
+      if (hasRunningProfile && appSettings.confirmExitWhenRunning) {
+        const confirmed = await feishuConfirm({
+          title: '退出 FRP-GUI',
+          content: '退出会停止当前运行中的 FRPC 连接。确定要退出应用吗？',
+          type: 'warning',
+          okText: '停止连接并退出',
+        });
+        if (!confirmed) return;
+      }
+      await exitDesktopApp();
+    }).then((release) => { unlisten = release; });
+    return () => unlisten?.();
+  }, [appSettings.confirmExitWhenRunning, profiles]);
 
   // 维护每个 profile 收到的最新事件时间戳（防止旧快照或旧事件乱序覆盖）
   const latestEventTimestampsRef = useRef<Map<string, number>>(new Map());
@@ -492,9 +590,24 @@ export function AppLayout() {
     const willRun = p.status !== 'running' && p.status !== 'starting';
 
     if (willRun) {
-      if (!activeCore?.path || activeCore.status === 'not_downloaded') {
-        feishuToast.warning('请先在“FRP 核心管理”中配置可用核心后再启动连接');
-        navigate('/cores');
+      const profileCore = cores.find((core) => core.id === p.coreId && core.path && core.status !== 'not_downloaded');
+      if (!profileCore) {
+        feishuToast.warning('请先在“我的连接”中为该连接选择已下载的 FRP 版本');
+        navigate('/profiles');
+        return;
+      }
+
+      const linkedServerNode = p.serverNodeId
+        ? serverNodes.find((node) => node.id === p.serverNodeId)
+        : undefined;
+      if (p.serverNodeId && (
+        !linkedServerNode
+        || linkedServerNode.status !== 'running'
+        || linkedServerNode.serviceStatus !== 'running'
+        || !linkedServerNode.deployment
+        || !linkedServerNode.credentialRef
+      )) {
+        feishuToast.warning('关联的 FRPS 节点未部署、未运行或缺少安全凭据，请先在“服务器节点”中修复');
         return;
       }
 
@@ -520,7 +633,7 @@ export function AppLayout() {
       );
 
       try {
-        const res = await startProfileInstance(p, activeCore ?? undefined);
+        const res = await startProfileInstance(p, profileCore, linkedServerNode?.credentialRef);
         if (res.accepted) {
           // 仅表示后端已接受启动请求并进入确认期；绝不在此将状态设为 running
           const states = await getRuntimeStates();
@@ -618,42 +731,6 @@ export function AppLayout() {
     }
   };
 
-  // 一键全部启动（仅处理 stopped 与可安全重试的 error，排除 starting、running、stopping）
-  const handleStartAll = async () => {
-    const toStart = profiles.filter((p) => p.status === 'stopped' || p.status === 'error');
-    if (toStart.length === 0) {
-      if (profiles.every((p) => p.status === 'running')) {
-        feishuToast.info('所有方案均已在运行中');
-      } else {
-        feishuToast.info('没有需要启动的连接');
-      }
-      return;
-    }
-    feishuToast.info(`正在批量启动 ${toStart.length} 个穿透方案...`);
-    for (const p of toStart) {
-      await handleToggleProfile(p);
-    }
-  };
-
-  // 一键全部停止
-  const handleStopAll = async () => {
-    const toStop = profiles.filter((p) => p.status === 'running');
-    if (toStop.length === 0) {
-      feishuToast.info('当前没有正在运行的方案');
-      return;
-    }
-    const confirmed = await feishuConfirm({
-      title: '一键停止所有服务',
-      content: `确定要立即停止正在运行的 ${toStop.length} 个穿透方案吗？已建立的网络连接将会中断。`,
-      type: 'warning',
-      okText: '全部停止',
-    });
-    if (confirmed) {
-      for (const p of toStop) {
-        await handleToggleProfile(p);
-      }
-    }
-  };
 
   // 保存方案 (新建 / 编辑)
   const handleSaveProfile = (savedProfile: Profile) => {
@@ -668,6 +745,25 @@ export function AppLayout() {
     feishuToast.success(`方案 [${savedProfile.name}] 配置已保存并同步`);
   };
 
+  const handleCreateGroup = (name: string) => {
+    const { group, groups: newGroups } = createProfileGroup(name, groups);
+    setGroups(newGroups);
+    feishuToast.success(`已创建分组“${group.name}”`);
+  };
+
+  const handleRenameGroup = (groupId: string, newName: string) => {
+    const newGroups = renameProfileGroup(groupId, newName, groups);
+    setGroups(newGroups);
+    feishuToast.success('已重命名分组');
+  };
+
+  const handleDeleteGroup = (groupId: string) => {
+    const { groups: newGroups, updatedProfiles } = deleteProfileGroup(groupId, groups, profiles);
+    setGroups(newGroups);
+    setProfiles(updatedProfiles);
+    feishuToast.success('已删除分组');
+  };
+
   // 克隆方案
   const handleCloneProfile = (p: Profile) => {
     const newProf: Profile = {
@@ -676,6 +772,9 @@ export function AppLayout() {
       name: `${p.name} (副本)`,
       status: 'stopped',
       stats: { bytesIn: 0, bytesOut: 0, curConns: 0, uptimeSeconds: 0 },
+      groupId: p.groupId,
+      tags: p.tags ? [...p.tags] : [],
+      isPinned: false,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -695,8 +794,114 @@ export function AppLayout() {
       if (p.status === 'running') {
         await stopProfileInstance(p.id, p.name);
       }
+      await deleteProfileSecret(profileCredentialReference(p.id));
       setProfiles((prev) => prev.filter((item) => item.id !== p.id));
       feishuToast.success(`已删除方案: ${p.name}`);
+    }
+  };
+
+  const [isBatchOperating, setIsBatchOperating] = useState<boolean>(false);
+  const isBatchOperatingRef = useRef<boolean>(false);
+
+  // 切换单个方案置顶状态
+  const handleTogglePin = (p: Profile) => {
+    setProfiles((prev) =>
+      prev.map((item) =>
+        item.id === p.id
+          ? {
+              ...item,
+              isPinned: !item.isPinned,
+              updatedAt: Date.now(),
+            }
+          : item
+      )
+    );
+  };
+
+  // 批量启动方案
+  const handleBatchStart = async (targets: Profile[]) => {
+    if (isBatchOperatingRef.current) {
+      feishuToast.warning('当前已有正在执行的批量操作，请稍候');
+      return;
+    }
+    if (!isTauriEnv()) {
+      feishuToast.warning('FRPC 运行功能仅可在桌面版应用中使用');
+      return;
+    }
+    const targetResult = getBatchActionTargets(targets, 'start');
+    if (!targetResult.canExecute) {
+      feishuToast.warning(targetResult.reason || '仅当所有选中连接均已停止时可批量启动');
+      return;
+    }
+
+    isBatchOperatingRef.current = true;
+    setIsBatchOperating(true);
+    try {
+      feishuToast.info(`正在批量启动 ${targetResult.executable.length} 个穿透方案...`);
+      for (const p of targetResult.executable) {
+        await handleToggleProfile(p);
+      }
+      feishuToast.success(`批量启动完成（共启动 ${targetResult.executable.length} 个连接）`);
+    } finally {
+      isBatchOperatingRef.current = false;
+      setIsBatchOperating(false);
+    }
+  };
+
+  // 批量停止方案
+  const handleBatchStop = async (targets: Profile[]) => {
+    if (isBatchOperatingRef.current) {
+      feishuToast.warning('当前已有正在执行的批量操作，请稍候');
+      return;
+    }
+    if (!isTauriEnv()) {
+      feishuToast.warning('FRPC 运行功能仅可在桌面版应用中使用');
+      return;
+    }
+    const targetResult = getBatchActionTargets(targets, 'stop');
+    if (!targetResult.canExecute) {
+      feishuToast.warning(targetResult.reason || '仅当所有选中连接均在运行时可批量停止');
+      return;
+    }
+
+    isBatchOperatingRef.current = true;
+    setIsBatchOperating(true);
+    try {
+      feishuToast.info(`正在批量停止 ${targetResult.executable.length} 个穿透方案...`);
+      for (const p of targetResult.executable) {
+        await handleToggleProfile(p);
+      }
+      feishuToast.success(`批量停止完成（共停止 ${targetResult.executable.length} 个连接）`);
+    } finally {
+      isBatchOperatingRef.current = false;
+      setIsBatchOperating(false);
+    }
+  };
+
+  // 批量删除方案（需清理凭据）
+  const handleBatchDelete = async (targets: Profile[]) => {
+    if (isBatchOperatingRef.current) {
+      feishuToast.warning('当前已有正在执行的批量操作，请稍候');
+      return;
+    }
+    const targetResult = getBatchActionTargets(targets, 'delete');
+    if (!targetResult.canExecute) {
+      feishuToast.warning(targetResult.reason || '仅当所有选中连接均已停止时可批量删除');
+      return;
+    }
+
+    isBatchOperatingRef.current = true;
+    setIsBatchOperating(true);
+    try {
+      const deleteIds = new Set(targetResult.executable.map((p) => p.id));
+      for (const p of targetResult.executable) {
+        await deleteProfileSecret(profileCredentialReference(p.id));
+      }
+      setProfiles((prev) => prev.filter((item) => !deleteIds.has(item.id)));
+      feishuToast.success(`已批量删除 ${targetResult.executable.length} 个连接并清理相关凭据`);
+    } finally {
+      isBatchOperatingRef.current = false;
+      setIsBatchOperating(false);
     }
   };
 
@@ -731,7 +936,7 @@ export function AppLayout() {
           {/* Logo 区域 */}
           <div className="h-12 flex items-center gap-2.5 px-4 border-b border-[#DEE0E3]">
             <div className="w-6 h-6 rounded-[6px] bg-[#165DFF] flex items-center justify-center text-white shadow-xs shrink-0">
-              <ServicesIcon className="w-3.5 h-3.5" />
+              <DashboardIcon className="w-3.5 h-3.5" />
             </div>
             <div className="min-w-0">
               <h1 className="font-semibold text-[14px] text-[#1F2329] tracking-tight truncate leading-tight">FRP GUI Pro</h1>
@@ -755,31 +960,12 @@ export function AppLayout() {
               )}
             >
               <div className="flex min-w-0 items-center gap-2.5">
-                <ServicesIcon className="w-4 h-4 shrink-0" />
+                <DashboardIcon className="w-4 h-4 shrink-0" />
                 <span className="truncate">我的连接</span>
               </div>
               <Badge variant="secondary" className="text-[11px] py-0 px-1.5 h-5 rounded-[4px] tabular-nums">
                 {profiles.length}
               </Badge>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setLogTargetProfileId(null);
-                navigate('/dashboard');
-              }}
-              className={cn(
-                "relative flex h-9 w-full items-center justify-between rounded-[6px] px-2.5 text-[14px] leading-[22px] transition-colors duration-150 select-none cursor-pointer",
-                currentNav === 'dashboard'
-                  ? "bg-[#EBEDF0] font-medium text-[#1F2329]"
-                  : "text-[#1F2329] hover:bg-[rgba(31,35,41,0.05)]"
-              )}
-            >
-              <div className="flex min-w-0 items-center gap-2.5">
-                <DashboardIcon className="w-4 h-4 shrink-0" />
-                <span className="truncate">运行状态</span>
-              </div>
             </button>
 
             <button
@@ -813,9 +999,6 @@ export function AppLayout() {
                 <PluginIcon className="w-4 h-4 shrink-0" />
                 <span className="truncate">FRP 核心管理</span>
               </div>
-              <span className={`text-[11px] font-medium tabular-nums ${cores.find((c) => c.id === activeCoreId) ? 'text-[#165DFF]' : 'text-[#8F959E]'}`}>
-                {cores.find((c) => c.id === activeCoreId)?.version || '待配置'}
-              </span>
             </button>
 
             <button
@@ -838,6 +1021,22 @@ export function AppLayout() {
                 </Badge>
               )}
             </button>
+
+            <button
+              type="button"
+              onClick={() => navigate('/settings')}
+              className={cn(
+                "relative flex h-9 w-full items-center justify-between rounded-[6px] px-2.5 text-[14px] leading-[22px] transition-colors duration-150 select-none cursor-pointer",
+                currentNav === 'settings'
+                  ? "bg-[#EBEDF0] font-medium text-[#1F2329]"
+                  : "text-[#1F2329] hover:bg-[rgba(31,35,41,0.05)]"
+              )}
+            >
+              <div className="flex min-w-0 items-center gap-2.5">
+                <SettingsIcon className="w-4 h-4 shrink-0" />
+                <span className="truncate">设置</span>
+              </div>
+            </button>
           </nav>
         </div>
 
@@ -855,55 +1054,23 @@ export function AppLayout() {
 
       {/* 右侧主体区域 (纯白背景 #FFFFFF) */}
       <main className="flex-1 flex flex-col overflow-hidden bg-white">
-        {/* 飞书 TopNav 标准顶栏 */}
-        <header className="h-12 bg-white border-b border-[#DEE0E3] px-6 flex items-center justify-between shrink-0 select-none">
-          <div className="flex items-center gap-2.5">
-            <span className="text-[15px] font-medium text-[#1F2329]">
-              {currentNav === 'profiles' && '我的连接'}
-              {currentNav === 'dashboard' && '运行状态'}
-              {currentNav === 'logs' && '实时日志监控看板'}
-              {currentNav === 'cores' && 'FRP 核心引擎管理'}
-              {currentNav === 'servers' && '服务器节点'}
-            </span>
-            <span className="text-[#DEE0E3]">|</span>
-            <span className="text-[13px] text-[#8F959E]">
-              {currentNav === 'profiles' && '统一管理与快速访问所有内网穿透连接'}
-              {currentNav === 'dashboard' && '实时监控在线穿透隧道、运行实例与连接访问入口'}
-              {currentNav === 'logs' && '实时捕获过滤 FRP 运行日志与连接事件'}
-              {currentNav === 'cores' && '管理与无缝切换本地 FRP 引擎与 GitHub 官方版本库'}
-              {currentNav === 'servers' && '安全保存远程 FRPS 节点信息与 SSH 凭据引用'}
-            </span>
-          </div>
-        </header>
-
         {/* 视图内容区 (路由与 URL 动态绑定) */}
         <div className="flex-1 overflow-y-auto p-6 bg-white">
           <Routes>
             <Route path="/" element={<Navigate to="/profiles" replace />} />
-            <Route
-              path="/dashboard"
-              element={
-                <DashboardOverview
-                  profiles={profiles}
-                  activeCore={activeCore}
-                  onStartAll={handleStartAll}
-                  onStopAll={handleStopAll}
-                  onCreateNew={() => {
-                    setEditingProfile(null);
-                    setIsEditorOpen(true);
-                  }}
-                  onOpenLogs={() => navigate('/logs')}
-                  onOpenDiagnostics={handleOpenDiagnostics}
-                  onOpenProfiles={() => navigate('/profiles')}
-                  onOpenCores={() => navigate('/cores')}
-                />
-              }
-            />
+            <Route path="/dashboard" element={<Navigate to="/profiles" replace />} />
             <Route
               path="/profiles"
               element={
                 <ProfileList
                   profiles={profiles}
+                  activeCore={activeCore}
+                  defaultSort={appSettings.profileSort}
+                  isBatchOperating={isBatchOperating}
+                  onTogglePin={handleTogglePin}
+                  onBatchStart={handleBatchStart}
+                  onBatchStop={handleBatchStop}
+                  onBatchDelete={handleBatchDelete}
                   onToggle={handleToggleProfile}
                   onEdit={(p) => {
                     setEditingProfile(p);
@@ -915,12 +1082,11 @@ export function AppLayout() {
                   onViewLogs={handleViewLogs}
                   onDiagnose={(profile) => handleOpenDiagnostics(profile)}
                   onRepairCore={handleRepairCore}
+                  onOpenCores={() => navigate('/cores')}
                   onCreateNew={() => {
                     setEditingProfile(null);
                     setIsEditorOpen(true);
                   }}
-                  onStartAll={handleStartAll}
-                  onStopAll={handleStopAll}
                 />
               }
             />
@@ -985,7 +1151,11 @@ export function AppLayout() {
                 />
               }
             />
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            <Route
+              path="/settings"
+              element={<SettingsPage settings={appSettings} onChange={handleAppSettingsChange} />}
+            />
+            <Route path="*" element={<Navigate to="/profiles" replace />} />
           </Routes>
         </div>
       </main>
@@ -997,6 +1167,8 @@ export function AppLayout() {
         onSave={handleSaveProfile}
         editingProfile={editingProfile}
         activeCore={activeCore}
+        cores={cores}
+        serverNodes={serverNodes}
       />
 
       <SyncModal

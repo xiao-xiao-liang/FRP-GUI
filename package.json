@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
-    "tauri": "tauri",
+    "tauri": "tauri dev",
     "tauri:bundle:setup": "node scripts/bundle-setup.cjs",
     "tauri:bundle:msi:online": "node scripts/bundle-msi.cjs online",
     "tauri:bundle:msi:offline": "node scripts/bundle-msi.cjs offline"

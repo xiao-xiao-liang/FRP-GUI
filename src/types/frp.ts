@@ -24,7 +24,7 @@ export interface VisitorRule {
   name: string;
   type: 'stcp' | 'sudp' | 'xtcp';
   serverName: string;
-  secretKey: string;
+  secretKey?: string;
   bindAddr: string;
   bindPort: number;
   useEncryption?: boolean;
@@ -145,6 +145,20 @@ export interface Profile {
   status: ProcessStatus;
   stats: ProfileStats;
   coreId?: string;
+  /** 已部署 FRPS 节点的本地标识；启动时由 Rust 从该节点凭据库注入 Token。 */
+  serverNodeId?: string;
+  groupId?: string;
+  tags?: string[];
+  isPinned?: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type ProfileSort = 'pinned_updated' | 'updated_desc' | 'name_asc';
+
+export interface ProfileGroup {
+  id: string;
+  name: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -175,6 +189,36 @@ export interface FrpCore {
   sizeBytes?: number;
   downloadUrl?: string;
   downloadDate?: string;
+}
+
+export type CoreDownloadPhase = 'downloading' | 'verifying' | 'extracting' | 'inspecting' | 'completed' | 'failed' | 'cancelled';
+
+export interface CoreDownloadInstallation {
+  path: string;
+  version: string;
+  os: string;
+  arch: string;
+  sizeBytes: number;
+}
+
+export interface CoreDownloadTask {
+  taskId: string;
+  releaseTag: string;
+  assetName: string;
+  phase: CoreDownloadPhase;
+  targetOs: string;
+  targetArch: string;
+  targetDir: string;
+  mirror: string;
+  receivedBytes: number;
+  totalBytes?: number;
+  speedBytesPerSecond?: number;
+  etaSeconds?: number;
+  extractedEntries?: number;
+  totalEntries?: number;
+  currentFileName?: string;
+  error?: string;
+  installation?: CoreDownloadInstallation;
 }
 
 export interface PresetScenario {
@@ -299,5 +343,3 @@ export interface ServerNodeFormValues extends Omit<FrpServerNode, 'id' | 'creden
   rememberCredentials: boolean;
   credentials: ServerCredentialDraft;
 }
-
-

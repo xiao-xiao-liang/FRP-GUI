@@ -37,6 +37,7 @@ export const LogDashboard: React.FC<LogDashboardProps> = ({
   const [frozenLogs, setFrozenLogs] = useState<LogEntry[] | null>(null);
   const [scrollTop, setScrollTop] = useState<number>(0);
   const [containerHeight, setContainerHeight] = useState<number>(600);
+  const [measuredRowHeights, setMeasuredRowHeights] = useState<Record<string, number>>({});
   const logEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -119,19 +120,70 @@ export const LogDashboard: React.FC<LogDashboardProps> = ({
     });
   }, [activeLogs, selectedProfileId, selectedLevel, searchKeyword]);
 
-  // 虚拟列表视口计算
+  // 虚拟列表视口计算。自动换行后的行高由 ResizeObserver 测量，未测量行先采用估算值。
   const totalCount = filteredLogs.length;
   const effectiveHeight = containerHeight > 0 ? containerHeight : 600;
-  const startIndex = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - OVERSCAN);
+  const rowKeys = useMemo(
+    () => filteredLogs.map((log, index) => log.id || `${log.sequence}-${index}`),
+    [filteredLogs],
+  );
+  const rowOffsets = useMemo(() => {
+    const offsets = [0];
+    rowKeys.forEach((key, index) => {
+      const rowHeight = wrapLogLines ? measuredRowHeights[key] || ITEM_HEIGHT : ITEM_HEIGHT;
+      offsets[index + 1] = offsets[index] + rowHeight;
+    });
+    return offsets;
+  }, [measuredRowHeights, rowKeys, wrapLogLines]);
+  const findRowIndexAtOffset = (offset: number) => {
+    let low = 0;
+    let high = totalCount;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (rowOffsets[middle + 1] <= offset) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
+    }
+    return Math.min(low, Math.max(0, totalCount - 1));
+  };
+  const startIndex = Math.max(0, findRowIndexAtOffset(scrollTop) - OVERSCAN);
   const endIndex = Math.min(
     totalCount,
-    Math.floor((scrollTop + effectiveHeight) / ITEM_HEIGHT) + OVERSCAN
+    findRowIndexAtOffset(scrollTop + effectiveHeight) + OVERSCAN + 1,
   );
   const visibleLogs = useMemo(() => {
     return filteredLogs.slice(startIndex, endIndex);
   }, [filteredLogs, startIndex, endIndex]);
-  const paddingTop = startIndex * ITEM_HEIGHT;
-  const paddingBottom = Math.max(0, (totalCount - endIndex) * ITEM_HEIGHT);
+  const totalContentHeight = rowOffsets[totalCount] || 0;
+
+  useEffect(() => {
+    if (!wrapLogLines || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const list = scrollContainerRef.current?.querySelector<HTMLElement>('[data-testid="runtime-log-list"]');
+    if (!list) {
+      return;
+    }
+    const observer = new ResizeObserver((entries) => {
+      setMeasuredRowHeights((current) => {
+        let changed = false;
+        const next = { ...current };
+        entries.forEach((entry) => {
+          const key = (entry.target as HTMLElement).dataset.logRowKey;
+          const height = Math.ceil(entry.contentRect.height);
+          if (key && height > 0 && current[key] !== height) {
+            next[key] = height;
+            changed = true;
+          }
+        });
+        return changed ? next : current;
+      });
+    });
+    list.querySelectorAll<HTMLElement>('[data-log-row-key]').forEach((row) => observer.observe(row));
+    return () => observer.disconnect();
+  }, [visibleLogs, wrapLogLines]);
 
   // 统计信息
   const stats = useMemo(() => {
@@ -358,7 +410,11 @@ export const LogDashboard: React.FC<LogDashboardProps> = ({
               <p className="text-[12px] text-[#8F959E] mt-1">启动 FRP 穿透方案后，此处将实时输出运行日志与连接状态</p>
             </div>
           ) : (
-            <div style={{ paddingTop: `${paddingTop}px`, paddingBottom: `${paddingBottom}px`, position: 'relative' }}>
+            <div
+              data-testid="runtime-log-list"
+              data-virtualization={wrapLogLines ? 'variable-height' : 'fixed-height'}
+              style={{ height: `${totalContentHeight}px`, position: 'relative' }}
+            >
               {visibleLogs.map((log, idx) => {
                 const actualIdx = startIndex + idx;
                 const levelClass =
@@ -373,6 +429,8 @@ export const LogDashboard: React.FC<LogDashboardProps> = ({
                 return (
                   <div
                     key={log.id || actualIdx}
+                    data-log-row-key={rowKeys[actualIdx]}
+                    style={{ position: 'absolute', top: `${rowOffsets[actualIdx]}px`, left: 0, right: 0 }}
                     className={`flex min-w-0 items-start gap-2.5 rounded-[4px] px-2 py-1 transition-colors hover:bg-[#EFF3FF] ${wrapLogLines ? '' : 'w-max min-w-full'}`}
                   >
                     <span className="text-[#8F959E] select-none text-[12px] w-8 text-right shrink-0">
@@ -396,7 +454,7 @@ export const LogDashboard: React.FC<LogDashboardProps> = ({
                   </div>
                 );
               })}
-              <div ref={logEndRef} style={{ position: 'absolute', bottom: 0, height: '1px', width: '1px', pointerEvents: 'none' }} />
+              <div ref={logEndRef} style={{ position: 'absolute', top: `${Math.max(0, totalContentHeight - 1)}px`, height: '1px', width: '1px', pointerEvents: 'none' }} />
             </div>
           )}
         </div>

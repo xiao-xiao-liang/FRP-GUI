@@ -1,6 +1,7 @@
 import { listen } from '@tauri-apps/api/event';
 import {
   DiagnosticResult,
+  CoreDownloadTask,
   FrpCore,
   FrpcFailureKind,
   FrpcRuntimeLogEvent,
@@ -19,6 +20,7 @@ import {
   ServerPreflightResult,
 } from '../types/frp';
 import { generateId } from '../lib/utils';
+import type { AppSettings } from './app-settings';
 
 // 检测是否处于 Tauri 宿主环境
 export const isTauriEnv = (): boolean => {
@@ -314,7 +316,8 @@ export async function getRuntimeLogs(profileId?: string): Promise<FrpcRuntimeLog
  */
 export async function startProfileInstance(
   profile: Profile,
-  core?: FrpCore
+  core?: FrpCore,
+  serverCredentialRef?: string,
 ): Promise<ProcessCommandResult> {
   if (isTauriEnv()) {
     try {
@@ -329,6 +332,7 @@ export async function startProfileInstance(
         profileType: profile.type,
         tomlContent: profile.rawToml,
         corePath: core?.path || '',
+        ...(serverCredentialRef ? { serverCredentialRef } : {}),
       });
       if (res?.accepted === undefined && res?.success === undefined) {
         return {
@@ -437,24 +441,45 @@ export async function testServerConnectivity(host: string, port: number): Promis
   };
 }
 
+export interface GitHubReleaseAsset {
+  name: string;
+  size: number;
+  downloadCount?: number;
+  downloadUrl: string;
+}
+
+export interface GitHubRelease {
+  tag: string;
+  name: string;
+  publishedAt: string;
+  downloadCount?: number;
+  assets: GitHubReleaseAsset[];
+}
+
 /**
  * 获取 GitHub Release 版本列表
  */
-export async function fetchGitHubReleases(): Promise<Array<{ tag: string; name: string; publishedAt: string; assets: any[] }>> {
+export async function fetchGitHubReleases(): Promise<GitHubRelease[]> {
   try {
-    const res = await fetch('https://api.github.com/repos/fatedier/frp/releases?per_page=12');
+    const res = await fetch('https://api.github.com/repos/fatedier/frp/releases?per_page=20');
     if (!res.ok) throw new Error('GitHub API rate limited');
     const data = await res.json();
-    return data.map((r: any) => ({
-      tag: r.tag_name,
-      name: r.name || r.tag_name,
-      publishedAt: r.published_at,
-      assets: (r.assets || []).map((a: any) => ({
+    return data.map((r: any) => {
+      const assets: GitHubReleaseAsset[] = (r.assets || []).map((a: any) => ({
         name: a.name,
         size: a.size,
+        downloadCount: typeof a.download_count === 'number' ? a.download_count : 0,
         downloadUrl: a.browser_download_url,
-      })),
-    }));
+      }));
+      const downloadCount = assets.reduce((sum, a) => sum + (a.downloadCount || 0), 0);
+      return {
+        tag: r.tag_name,
+        name: r.name || r.tag_name,
+        publishedAt: r.published_at,
+        downloadCount,
+        assets,
+      };
+    });
   } catch (e) {
     // 默认官方版本备用列表
     return [
@@ -462,32 +487,35 @@ export async function fetchGitHubReleases(): Promise<Array<{ tag: string; name: 
         tag: 'v0.61.1',
         name: 'Release v0.61.1 (最新稳定版)',
         publishedAt: '2025-01-15T08:00:00Z',
+        downloadCount: 154200,
         assets: [
-          { name: 'frp_0.61.1_windows_amd64.zip', size: 16500000, downloadUrl: 'https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_windows_amd64.zip' },
-          { name: 'frp_0.61.1_windows_arm64.zip', size: 15400000, downloadUrl: 'https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_windows_arm64.zip' },
-          { name: 'frp_0.61.1_darwin_arm64.tar.gz', size: 15800000, downloadUrl: 'https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_darwin_arm64.tar.gz' },
-          { name: 'frp_0.61.1_darwin_amd64.tar.gz', size: 16200000, downloadUrl: 'https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_darwin_amd64.tar.gz' },
-          { name: 'frp_0.61.1_linux_amd64.tar.gz', size: 16800000, downloadUrl: 'https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_linux_amd64.tar.gz' },
-          { name: 'frp_0.61.1_linux_arm64.tar.gz', size: 15600000, downloadUrl: 'https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_linux_arm64.tar.gz' },
-          { name: 'frp_0.61.1_android_arm64.tar.gz', size: 15200000, downloadUrl: 'https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_android_arm64.tar.gz' },
+          { name: 'frp_0.61.1_windows_amd64.zip', size: 16500000, downloadCount: 82000, downloadUrl: 'https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_windows_amd64.zip' },
+          { name: 'frp_0.61.1_windows_arm64.zip', size: 15400000, downloadCount: 14000, downloadUrl: 'https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_windows_arm64.zip' },
+          { name: 'frp_0.61.1_darwin_arm64.tar.gz', size: 15800000, downloadCount: 21000, downloadUrl: 'https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_darwin_arm64.tar.gz' },
+          { name: 'frp_0.61.1_darwin_amd64.tar.gz', size: 16200000, downloadCount: 11000, downloadUrl: 'https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_darwin_amd64.tar.gz' },
+          { name: 'frp_0.61.1_linux_amd64.tar.gz', size: 16800000, downloadCount: 18000, downloadUrl: 'https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_linux_amd64.tar.gz' },
+          { name: 'frp_0.61.1_linux_arm64.tar.gz', size: 15600000, downloadCount: 8200, downloadUrl: 'https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_linux_arm64.tar.gz' },
         ],
       },
       {
         tag: 'v0.60.0',
         name: 'Release v0.60.0',
         publishedAt: '2024-10-10T08:00:00Z',
+        downloadCount: 98000,
         assets: [],
       },
       {
         tag: 'v0.58.1',
         name: 'Release v0.58.1',
         publishedAt: '2024-06-20T08:00:00Z',
+        downloadCount: 76000,
         assets: [],
       },
       {
         tag: 'v0.52.3',
         name: 'Release v0.52.3 (TOML 基础支持版)',
         publishedAt: '2023-11-05T08:00:00Z',
+        downloadCount: 112000,
         assets: [],
       },
     ];
@@ -596,6 +624,50 @@ export async function pickDirectoryNative(): Promise<string | null> {
   return null;
 }
 
+export interface RecognizedLocalFrpcCore {
+  path: string;
+  version: string;
+  os: string;
+  arch: string;
+  sizeBytes: number;
+}
+
+export interface SkippedLocalFrpcCore {
+  fileName: string;
+  reason: string;
+}
+
+export interface LocalFrpcCoreScanResult {
+  recognized: RecognizedLocalFrpcCore[];
+  skipped: SkippedLocalFrpcCore[];
+  error?: string;
+}
+
+/**
+ * 扫描用户选择目录中的 FRPC 候选；仅桌面端调用受控 Rust 命令。
+ */
+export async function scanLocalFrpcCores(directoryPath: string): Promise<LocalFrpcCoreScanResult> {
+  if (!isTauriEnv()) {
+    return {
+      recognized: [],
+      skipped: [],
+      error: '浏览器预览不能扫描本机 FRP 文件夹，请在 FRP-GUI 桌面端操作',
+    };
+  }
+
+  try {
+    return await tauriInvoke<LocalFrpcCoreScanResult>('scan_local_frpc_cores', {
+      directoryPath,
+    });
+  } catch (err: any) {
+    return {
+      recognized: [],
+      skipped: [],
+      error: err?.message || '扫描本地 FRP 文件夹失败，请重新选择目录',
+    };
+  }
+}
+
 export interface FileSystemItem {
   name: string;
   path: string;
@@ -681,7 +753,9 @@ export async function createFileSystemDirectory(dirPath: string): Promise<{ succ
 }
 
 export interface DownloadCoreParams {
-  downloadUrl: string;
+  releaseTag: string;
+  assetName: string;
+  mirror: 'official' | 'ghproxy' | 'fastgit';
   targetDir: string;
   version: string;
   targetOs: string;
@@ -697,6 +771,85 @@ export interface DownloadCoreResult {
   os: string;
   arch: string;
   error?: string;
+}
+
+export interface CoreDownloadRequest {
+  releaseTag: string;
+  assetName: string;
+  mirror: 'official' | 'ghproxy' | 'fastgit';
+  targetDir: string;
+  targetOs: string;
+  targetArch: string;
+}
+
+export type CoreDownloadProgressListener = (task: CoreDownloadTask) => void;
+
+const desktopDownloadError = '浏览器预览不能下载本机 FRP 核心，请在 FRP-GUI 桌面端操作';
+
+export async function startCoreDownload(request: CoreDownloadRequest): Promise<CoreDownloadTask | { error: string }> {
+  if (!isTauriEnv()) return { error: desktopDownloadError };
+  try {
+    const task = await tauriInvoke<CoreDownloadTask | null>('start_core_download', {
+      request: {
+        releaseTag: request.releaseTag,
+        assetName: request.assetName,
+        mirror: request.mirror,
+        targetDir: request.targetDir,
+        targetOs: request.targetOs,
+        targetArch: request.targetArch,
+      },
+    });
+    if (!task || !task.taskId) {
+      return { error: '桌面端下载服务未就绪，请完全退出并重新打开 FRP-GUI 后重试' };
+    }
+    return task;
+  } catch (err: any) {
+    return { error: typeof err === 'string' && err.trim() ? err : err?.message || '启动 FRP 核心下载任务失败，请完全退出并重新打开 FRP-GUI 后重试' };
+  }
+}
+
+export async function listCoreDownloadTasks(): Promise<CoreDownloadTask[]> {
+  if (!isTauriEnv()) return [];
+  try {
+    return await tauriInvoke<CoreDownloadTask[]>('list_core_download_tasks');
+  } catch {
+    return [];
+  }
+}
+
+export async function resumeCoreDownload(taskId: string): Promise<CoreDownloadTask | { error: string }> {
+  if (!isTauriEnv()) return { error: desktopDownloadError };
+  try {
+    return await tauriInvoke<CoreDownloadTask>('resume_core_download', { taskId });
+  } catch (err: any) {
+    return { error: err?.message || '继续 FRP 核心下载任务失败' };
+  }
+}
+
+export async function cancelCoreDownload(taskId: string): Promise<{ accepted: boolean; error?: string }> {
+  if (!isTauriEnv()) return { accepted: false, error: desktopDownloadError };
+  try {
+    await tauriInvoke<void>('cancel_core_download', { taskId });
+    return { accepted: true };
+  } catch (err: any) {
+    return { accepted: false, error: err?.message || '取消 FRP 核心下载任务失败' };
+  }
+}
+
+export async function clearCoreDownloadTask(taskId: string): Promise<{ accepted: boolean; error?: string }> {
+  if (!isTauriEnv()) return { accepted: false, error: desktopDownloadError };
+  try {
+    await tauriInvoke<void>('clear_core_download_task', { taskId });
+    return { accepted: true };
+  } catch (err: any) {
+    return { accepted: false, error: err?.message || '清理 FRP 核心下载任务失败' };
+  }
+}
+
+export async function subscribeCoreDownloadProgress(listener: CoreDownloadProgressListener): Promise<() => void> {
+  if (!isTauriEnv()) return () => {};
+  const unlisten = await listen<CoreDownloadTask>('core-download-progress', (event) => listener(event.payload));
+  return () => unlisten();
 }
 
 export type ServerCredentialKind =
@@ -757,6 +910,43 @@ export async function deleteServerCredentials(reference: string): Promise<void> 
   await tauriInvoke<void>('delete_server_credentials', { reference });
 }
 
+/** 将完整方案配置保存到桌面端系统凭据库，localStorage 只保存脱敏元数据。 */
+export async function storeProfileSecret(reference: string, secret: string): Promise<void> {
+  if (!isTauriEnv()) {
+    throw new Error('仅桌面版可将方案凭据保存到系统安全凭据库');
+  }
+  await tauriInvoke<void>('store_profile_secret', { reference, secret });
+}
+
+/** 恢复桌面端系统凭据库中的完整方案配置。 */
+export async function loadProfileSecret(reference: string): Promise<string | null> {
+  if (!isTauriEnv()) return null;
+  return tauriInvoke<string | null>('load_profile_secret', { reference });
+}
+
+export async function deleteProfileSecret(reference: string): Promise<void> {
+  if (!isTauriEnv()) return;
+  await tauriInvoke<void>('delete_profile_secret', { reference });
+}
+
+/** 将窗口生命周期设置同步给桌面端；浏览器预览不执行任何原生操作。 */
+export async function syncAppSettings(settings: AppSettings): Promise<void> {
+  if (!isTauriEnv()) return;
+  await tauriInvoke<void>('update_app_settings', { settings });
+}
+
+/** 请求桌面端先停止受管 FRPC，再退出应用。 */
+export async function exitDesktopApp(): Promise<void> {
+  if (!isTauriEnv()) return;
+  await tauriInvoke<void>('exit_desktop_app');
+}
+
+/** 启动时按用户设置隐藏主窗口到系统托盘。 */
+export async function hideMainWindow(): Promise<void> {
+  if (!isTauriEnv()) return;
+  await tauriInvoke<void>('hide_main_window');
+}
+
 /**
  * 真实下载并解压 FRP 官方核心压缩包至指定本地绝对目录
  */
@@ -765,7 +955,9 @@ export async function downloadAndExtractCore(params: DownloadCoreParams): Promis
   if (isTauriEnv()) {
     try {
       return await tauriInvoke<DownloadCoreResult>('download_and_extract_core', {
-        downloadUrl: params.downloadUrl,
+        releaseTag: params.releaseTag,
+        assetName: params.assetName,
+        mirror: params.mirror,
         targetDir: params.targetDir,
         version: params.version,
         targetOs: params.targetOs,
@@ -785,44 +977,16 @@ export async function downloadAndExtractCore(params: DownloadCoreParams): Promis
     }
   }
 
-  // 2. Vite 宿主开发环境：调用 Node.js 后端中间件真实下载解压
-  try {
-    const res = await fetch('/api/dev/download-core', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(params),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      return {
-        success: false,
-        exePath: '',
-        targetDir: params.targetDir,
-        sizeBytes: 0,
-        version: params.version,
-        os: params.targetOs,
-        arch: params.targetArch,
-        error: `服务响应错误 (${res.status}): ${errText}`,
-      };
-    }
-
-    const data = await res.json();
-    return data;
-  } catch (e: any) {
-    return {
-      success: false,
-      exePath: '',
-      targetDir: params.targetDir,
-      sizeBytes: 0,
-      version: params.version,
-      os: params.targetOs,
-      arch: params.targetArch,
-      error: e?.message || String(e),
-    };
-  }
+  return {
+    success: false,
+    exePath: '',
+    targetDir: params.targetDir,
+    sizeBytes: 0,
+    version: params.version,
+    os: params.targetOs,
+    arch: params.targetArch,
+    error: '浏览器预览不能下载本机 FRP 核心，请在 FRP-GUI 桌面端操作',
+  };
 }
 
 /**
@@ -962,6 +1126,3 @@ export async function runFrpsOperation(params: RunFrpsOperationParams): Promise<
 
 export * from './frp-binary-detector';
 export * from './frp-platform-detector';
-
-
-

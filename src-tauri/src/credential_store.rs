@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
 const CREDENTIAL_PREFIX: &str = "frp-gui/server-node/";
+const PROFILE_CREDENTIAL_PREFIX: &str = "frp-gui/profile/";
 
 #[derive(Clone, Copy, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -39,6 +40,57 @@ pub fn credential_username(reference: &str, kind: CredentialKind) -> String {
 fn entry(reference: &str, kind: CredentialKind) -> Result<keyring::Entry, String> {
     keyring::Entry::new("com.frpgui.pro.server-node", &credential_username(reference, kind))
         .map_err(|error| format!("无法访问系统安全凭据库: {error}"))
+}
+
+pub fn is_valid_profile_credential_reference(reference: &str) -> bool {
+    if let Some(profile_id) = reference.strip_prefix(PROFILE_CREDENTIAL_PREFIX) {
+        !profile_id.is_empty()
+            && !profile_id
+                .chars()
+                .any(|c| c == '/' || c.is_control() || c.is_whitespace())
+    } else {
+        false
+    }
+}
+
+fn profile_entry(reference: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new("com.frpgui.pro.profile", reference)
+        .map_err(|error| format!("无法访问系统安全凭据库: {error}"))
+}
+
+/// 将完整 Profile 配置保存到操作系统安全凭据库，禁止在浏览器端持久化。
+#[tauri::command]
+pub fn store_profile_secret(reference: String, secret: String) -> Result<(), String> {
+    if !is_valid_profile_credential_reference(&reference) || secret.trim().is_empty() {
+        return Err("方案凭据引用或内容无效".to_string());
+    }
+    profile_entry(&reference)?
+        .set_password(&secret)
+        .map_err(|error| format!("保存系统安全凭据失败: {error}"))
+}
+
+/// 仅供桌面端恢复已保存的方案配置；浏览器端没有对应调用入口。
+#[tauri::command]
+pub fn load_profile_secret(reference: String) -> Result<Option<String>, String> {
+    if !is_valid_profile_credential_reference(&reference) {
+        return Err("方案凭据引用无效".to_string());
+    }
+    match profile_entry(&reference)?.get_password() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err("无法访问系统安全凭据库".to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn delete_profile_secret(reference: String) -> Result<(), String> {
+    if !is_valid_profile_credential_reference(&reference) {
+        return Err("方案凭据引用无效".to_string());
+    }
+    match profile_entry(&reference)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("删除系统安全凭据失败: {error}")),
+    }
 }
 
 #[tauri::command]
@@ -123,7 +175,7 @@ pub(crate) fn load_frps_deployment_credentials(reference: &str) -> Result<Resolv
 
 #[cfg(test)]
 mod tests {
-    use super::{credential_username, is_valid_credential_reference, CredentialKind};
+    use super::{credential_username, is_valid_credential_reference, is_valid_profile_credential_reference, CredentialKind};
 
     #[test]
     fn credential_username_is_scoped_by_node_and_kind() {
@@ -181,5 +233,13 @@ mod tests {
         assert!(!is_valid_credential_reference("frp-gui/server-node/node\r1"));
         assert!(!is_valid_credential_reference("frp-gui/server-node/node\t1"));
         assert!(!is_valid_credential_reference("frp-gui/server-node/node 1"));
+    }
+
+    #[test]
+    fn profile_credential_reference_is_scoped_and_rejects_paths() {
+        assert!(is_valid_profile_credential_reference("frp-gui/profile/profile-1"));
+        assert!(!is_valid_profile_credential_reference("frp-gui/profile/"));
+        assert!(!is_valid_profile_credential_reference("frp-gui/profile/profile/1"));
+        assert!(!is_valid_profile_credential_reference("frp-gui/server-node/profile-1"));
     }
 }
