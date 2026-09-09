@@ -5,6 +5,7 @@ import { Button } from '../../components/ui/button';
 import { Download, Calendar, Link2 } from 'lucide-react';
 import { DownloadIcon } from '@/components/icons';
 import { FeishuTooltip } from '../../components/ui/tooltip';
+import { FeishuSkeleton } from '../../components/ui/feishu-skeleton';
 import { UnifiedCoreRow } from './CoreManagerPage';
 
 function formatBytes(bytes: number | undefined): string {
@@ -203,3 +204,22 @@ export const CoreCard: React.FC<CoreCardProps> = ({
     </Card>
   );
 };
+
+export const CoreCardSkeleton: React.FC = () => (
+  <Card className="rounded-[10px] border border-[#DEE0E3] bg-white p-4 flex flex-col justify-between h-[180px] select-none" data-testid="core-card-skeleton">
+    <div>
+      <div className="flex items-center justify-between">
+        <FeishuSkeleton className="w-16 h-5.5 rounded-full" />
+        <FeishuSkeleton className="w-14 h-5 rounded-full" />
+      </div>
+      <div className="mt-4 space-y-2.5">
+        <FeishuSkeleton className="w-32 h-3.5" />
+        <FeishuSkeleton className="w-20 h-3.5" />
+      </div>
+    </div>
+    <div className="pt-3 border-t border-[#DEE0E3]/60 flex items-center justify-between">
+      <FeishuSkeleton className="w-20 h-3" />
+      <FeishuSkeleton className="w-16 h-7 rounded-[6px]" />
+    </div>
+  </Card>
+);

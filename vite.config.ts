@@ -137,6 +137,42 @@ function devNativeDialogPlugin(): Plugin {
         }
       });
 
+      // 2.5 原生压缩包选择对话框
+      server.middlewares.use('/api/dev/pick-archive', (_req, res) => {
+        if (process.platform === 'win32') {
+          const script = `
+          Add-Type -AssemblyName System.Windows.Forms
+          $dialog = New-Object System.Windows.Forms.OpenFileDialog
+          $dialog.Title = "选择 FRP 压缩包 (*.zip, *.tar.gz, *.tgz)"
+          $dialog.Filter = "FRP 压缩包 (*.zip;*.tar.gz;*.tgz)|*.zip;*.tar.gz;*.tgz|所有文件 (*.*)|*.*"
+          $dialog.RestoreDirectory = $true
+          if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+              Write-Output $dialog.FileName
+          }
+          `;
+          execFile('powershell', ['-NoProfile', '-WindowStyle', 'Hidden', '-Command', script], (err, stdout) => {
+            res.setHeader('Content-Type', 'application/json');
+            if (err) {
+              res.end(JSON.stringify({ success: false, path: null, error: err.message }));
+            } else {
+              const selectedPath = stdout.trim();
+              res.end(JSON.stringify({ success: true, path: selectedPath || null }));
+            }
+          });
+        } else if (process.platform === 'darwin') {
+          const script = 'POSIX path of (choose file with prompt "选择 FRP 压缩包 (*.zip, *.tar.gz)")';
+          execFile('osascript', ['-e', script], (err, stdout) => {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: !err, path: stdout.trim() || null }));
+          });
+        } else {
+          execFile('zenity', ['--file-selection', '--title=选择 FRP 压缩包 (*.zip, *.tar.gz)'], (err, stdout) => {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: !err, path: stdout.trim() || null }));
+          });
+        }
+      });
+
       // 3. 文件系统目录内容罗列 API (供飞书 Universe Design 内置文件/目录选择器使用)
       server.middlewares.use('/api/dev/fs/list', (req, res) => {
         res.setHeader('Content-Type', 'application/json');

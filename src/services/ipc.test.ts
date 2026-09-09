@@ -10,6 +10,8 @@ import {
   inspectLocalFrpcCore,
   pickCoreFileNative,
   pickDirectoryNative,
+  pickArchiveFileNative,
+  importLocalFrpcArchive,
   scanLocalFrpcCores,
   downloadAndExtractCore,
   startCoreDownload,
@@ -678,6 +680,48 @@ describe('IPC Runtime Contract and Event Bridge', () => {
       });
       expect(fetchSpy).not.toHaveBeenCalled();
       expect(pickDirectoryNative).toBeDefined();
+    });
+  });
+
+  describe('官方压缩包选择与导入', () => {
+    it('桌面端正常唤起 pick_archive_file 并返回文件路径', async () => {
+      vi.mocked(isTauriEnv).mockReturnValue(true);
+      (window as any).__MOCK_TAURI_ENV__ = true;
+      const mockInvoke = vi.fn().mockResolvedValue('D:\\Downloads\\frp_0.61.1_windows_amd64.zip');
+      (window as any).__TAURI__ = { core: { invoke: mockInvoke } };
+
+      const result = await pickArchiveFileNative();
+      expect(result).toBe('D:\\Downloads\\frp_0.61.1_windows_amd64.zip');
+      expect(mockInvoke).toHaveBeenCalledWith('pick_archive_file');
+    });
+
+    it('桌面端调用 importLocalFrpcArchive 发起安全解压与验真导入', async () => {
+      vi.mocked(isTauriEnv).mockReturnValue(true);
+      (window as any).__MOCK_TAURI_ENV__ = true;
+      const mockCore = {
+        path: 'C:\\Users\\AppData\\cores\\frp_0.61.1\\frpc.exe',
+        version: 'v0.61.1',
+        os: 'windows',
+        arch: 'amd64',
+        sizeBytes: 15400000,
+      };
+      const mockInvoke = vi.fn().mockResolvedValue(mockCore);
+      (window as any).__TAURI__ = { core: { invoke: mockInvoke } };
+
+      const res = await importLocalFrpcArchive('D:\\Downloads\\frp_0.61.1_windows_amd64.zip');
+      expect(res).toEqual(mockCore);
+      expect(mockInvoke).toHaveBeenCalledWith('import_local_frpc_archive', {
+        archivePath: 'D:\\Downloads\\frp_0.61.1_windows_amd64.zip',
+      });
+    });
+
+    it('浏览器非 Tauri 环境调用 importLocalFrpcArchive 抛出明确阻断异常', async () => {
+      vi.mocked(isTauriEnv).mockReturnValue(false);
+      (window as any).__MOCK_TAURI_ENV__ = false;
+
+      await expect(importLocalFrpcArchive('D:\\test.zip')).rejects.toThrow(
+        '浏览器预览不能解压与导入本机 FRP 压缩包'
+      );
     });
   });
 

@@ -245,7 +245,7 @@ fn commit_staging(staging: &Path, target: &Path) -> Result<(), String> {
         Err(error) => Err(error.to_string()),
     }
 }
-fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
+pub fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
     fs::create_dir_all(destination).map_err(|e| format!("创建目标安装目录失败: {e}"))?;
     for entry in fs::read_dir(source).map_err(|e| format!("读取临时安装目录失败: {e}"))? {
         let entry = entry.map_err(|e| format!("读取临时安装条目失败: {e}"))?;

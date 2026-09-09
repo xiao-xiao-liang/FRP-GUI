@@ -401,65 +401,17 @@ async fn test_tcp_connection(host: String, port: u16) -> Result<TcpTestResult, S
 
 #[tauri::command]
 async fn pick_core_file() -> Result<Option<String>, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let script = r#"
-        Add-Type -AssemblyName System.Windows.Forms
-        $dialog = New-Object System.Windows.Forms.OpenFileDialog
-        $dialog.Title = "选择 FRP 核心程序 (frpc / frps)"
-        $dialog.Filter = "FRP 可执行程序 (*frp*.exe;frpc.exe;frps.exe)|*frp*.exe;frpc.exe;frps.exe|所有可执行程序 (*.exe)|*.exe|所有文件 (*.*)|*.*"
-        $dialog.InitialDirectory = [Environment]::GetFolderPath("Desktop")
-        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            Write-Output $dialog.FileName
-        }
-        "#;
-        let mut cmd = std::process::Command::new("powershell");
-        cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script]);
+    tokio::task::spawn_blocking(|| {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("选择 FRP 核心程序 (frpc / frps)");
         #[cfg(target_os = "windows")]
         {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000);
+            dialog = dialog.add_filter("FRP 可执行程序 (*.exe)", &["exe"]);
         }
-        let output = cmd.output();
-        match output {
-            Ok(out) => {
-                let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if path.is_empty() {
-                    Ok(None)
-                } else {
-                    Ok(Some(path))
-                }
-            }
-            Err(e) => Err(format!("唤起系统文件选择框失败: {}", e)),
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let script = r#"POSIX path of (choose file with prompt "选择 FRP 核心程序 (frpc / frps)")"#;
-        let output = std::process::Command::new("osascript")
-            .args(["-e", script])
-            .output();
-        match output {
-            Ok(out) => {
-                let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if path.is_empty() { Ok(None) } else { Ok(Some(path)) }
-            }
-            Err(e) => Err(format!("唤起系统文件选择框失败: {}", e)),
-        }
-    }
-    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-    {
-        let output = std::process::Command::new("zenity")
-            .args(["--file-selection", "--title=选择 FRP 核心程序 (frpc / frps)"])
-            .output();
-        match output {
-            Ok(out) => {
-                let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if path.is_empty() { Ok(None) } else { Ok(Some(path)) }
-            }
-            Err(_) => Ok(None),
-        }
-    }
+        dialog.pick_file().map(|p| p.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| format!("唤起系统文件选择框失败: {e}"))
 }
 
 #[tauri::command]
@@ -599,79 +551,139 @@ fn get_system_platform() -> SystemPlatformInfo {
 
 #[tauri::command]
 async fn pick_directory() -> Result<Option<String>, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let script = r#"
-        Add-Type -AssemblyName System.Windows.Forms
-        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-        $dialog.Description = "选择 FRP 核心下载与解压目标目录"
-        $dialog.ShowNewFolderButton = $true
-        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            Write-Output $dialog.SelectedPath
-        }
-        "#;
-        let mut cmd = std::process::Command::new("powershell");
-        cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script]);
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000);
-        }
-        let output = cmd.output();
-        match output {
-            Ok(out) => {
-                let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if path.is_empty() {
-                    Ok(None)
-                } else {
-                    Ok(Some(path))
-                }
-            }
-            Err(e) => Err(format!("唤起系统目录选择框失败: {}", e)),
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let script = r#"POSIX path of (choose folder with prompt "选择 FRP 核心下载与解压目标目录")"#;
-        let output = std::process::Command::new("osascript")
-            .args(["-e", script])
-            .output();
-        match output {
-            Ok(out) => {
-                let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if path.is_empty() { Ok(None) } else { Ok(Some(path)) }
-            }
-            Err(e) => Err(format!("唤起系统目录选择框失败: {}", e)),
-        }
-    }
-    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-    {
-        let output = std::process::Command::new("zenity")
-            .args(["--file-selection", "--directory", "--title=选择 FRP 核心下载与解压目标目录"])
-            .output();
-        match output {
-            Ok(out) => {
-                let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if path.is_empty() { Ok(None) } else { Ok(Some(path)) }
-            }
-            Err(_) => Ok(None),
-        }
-    }
+    tokio::task::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("选择 FRP 核心目录")
+            .pick_folder()
+            .map(|p| p.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| format!("唤起系统目录选择框失败: {e}"))
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DownloadCoreResult {
-    pub success: bool,
-    #[serde(rename = "exePath")]
-    pub exe_path: String,
-    #[serde(rename = "targetDir")]
-    pub target_dir: String,
-    #[serde(rename = "sizeBytes")]
-    pub size_bytes: u64,
-    pub version: String,
-    pub os: String,
-    pub arch: String,
-    pub error: Option<String>,
+#[tauri::command]
+async fn pick_archive_file() -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("选择 FRP 压缩包")
+            .add_filter("FRP 压缩包 (*.zip, *.tar.gz, *.tgz)", &["zip", "tar.gz", "gz", "tgz"])
+            .pick_file()
+            .map(|p| p.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| format!("唤起系统压缩包选择框失败: {e}"))
+}
+
+#[tauri::command]
+async fn import_local_frpc_archive(
+    app: AppHandle,
+    archive_path: String,
+) -> Result<RecognizedLocalFrpcCore, String> {
+    let archive = std::path::PathBuf::from(&archive_path);
+    if !archive.is_file() {
+        return Err("所选压缩包文件不存在或无法读取".to_string());
+    }
+    if !core_import::is_archive_candidate(&archive) {
+        return Err("所选文件不是支持的 FRP 压缩包（仅支持 .zip, .tar.gz, .tgz）".to_string());
+    }
+
+    let temp_staging = std::env::temp_dir().join(format!("frp-import-{}", uuid::Uuid::new_v4()));
+    let extract_archive_path = archive.clone();
+    let extract_staging = temp_staging.clone();
+
+    // 1. 解压到临时目录
+    tokio::task::spawn_blocking(move || {
+        core_import::extract_archive_safe(&extract_archive_path, &extract_staging)
+    })
+    .await
+    .map_err(|e| format!("解压任务异常: {e}"))??;
+
+    // 2. 发现解压出来的可执行候选
+    let scan_staging = temp_staging.clone();
+    let discovery = match tokio::task::spawn_blocking(move || {
+        core_import::discover_frpc_candidates(&scan_staging)
+    })
+    .await
+    {
+        Ok(Ok(d)) => d,
+        Ok(Err(err)) => {
+            let _ = std::fs::remove_dir_all(&temp_staging);
+            return Err(format!("扫描解压内容失败: {err}"));
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&temp_staging);
+            return Err(format!("扫描解压内容异常: {e}"));
+        }
+    };
+
+    if discovery.candidates.is_empty() {
+        let _ = std::fs::remove_dir_all(&temp_staging);
+        if discovery.skipped.iter().any(|s| s.file_name.to_lowercase().contains("frps")) {
+            return Err("所选压缩包中仅包含 FRPS 服务端程序，未找到可用的 FRPC 客户端程序".to_string());
+        }
+        return Err("所选压缩包中未找到 frpc 或 frpc.exe 可执行文件".to_string());
+    }
+
+    let frpc_candidate = discovery.candidates[0].clone();
+
+    // 3. 在当前宿主运行只读检查 (frpc --version)
+    let version = match frpc_runtime::inspect_frpc_executable(frpc_candidate.to_string_lossy().as_ref()).await {
+        Ok(v) => v,
+        Err(err) => {
+            let _ = std::fs::remove_dir_all(&temp_staging);
+            return Err(format!("无法运行压缩包中的 FRPC 核心（可能与当前操作系统架构不匹配）: {err}"));
+        }
+    };
+
+    // 4. 获取受管应用数据目录 cores/
+    let app_data = app.path().app_data_dir().map_err(|e| {
+        let _ = std::fs::remove_dir_all(&temp_staging);
+        format!("无法获取应用数据目录: {e}")
+    })?;
+    let cores_dir = app_data.join("cores");
+    let file_stem = archive
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("imported_frpc")
+        .trim_end_matches(".tar");
+    let target_install_dir = cores_dir.join(file_stem);
+
+    let _ = std::fs::create_dir_all(&cores_dir);
+
+    // 5. 迁移临时目录到受管目标目录
+    if target_install_dir.exists() {
+        let _ = std::fs::remove_dir_all(&target_install_dir);
+    }
+    if let Err(err) = std::fs::rename(&temp_staging, &target_install_dir) {
+        if let Err(copy_err) = core_download::copy_directory(&temp_staging, &target_install_dir) {
+            let _ = std::fs::remove_dir_all(&temp_staging);
+            return Err(format!("安装核心目录失败: {copy_err} (原重命名错误: {err})"));
+        }
+        let _ = std::fs::remove_dir_all(&temp_staging);
+    }
+
+    // 6. 重新定位目标目录中的 frpc
+    let rel_path = frpc_candidate
+        .strip_prefix(&temp_staging)
+        .map_err(|e| format!("路径计算错误: {e}"))?;
+    let final_frpc_path = target_install_dir.join(rel_path);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&final_frpc_path, std::fs::Permissions::from_mode(0o755));
+    }
+
+    let platform = get_system_platform();
+    let size_bytes = std::fs::metadata(&final_frpc_path).map(|m| m.len()).unwrap_or(0);
+
+    Ok(RecognizedLocalFrpcCore {
+        path: final_frpc_path.to_string_lossy().to_string(),
+        version,
+        os: platform.os,
+        arch: platform.arch,
+        size_bytes,
+    })
 }
 
 pub const MAX_CORE_ARCHIVE_BYTES: usize = 100 * 1024 * 1024;
@@ -739,280 +751,6 @@ pub fn append_core_download_chunk(
     Ok(())
 }
 
-#[tauri::command]
-async fn download_and_extract_core(
-    release_tag: String,
-    asset_name: String,
-    mirror: String,
-    target_dir: String,
-    version: String,
-    target_os: String,
-    target_arch: String,
-) -> Result<DownloadCoreResult, String> {
-    // 0. 验证官方下载源
-    let download_url = match build_official_core_download_url(&release_tag, &asset_name) {
-        Ok(url) => url,
-        Err(e) => {
-            return Ok(DownloadCoreResult {
-                success: false,
-                exe_path: String::new(),
-                target_dir: target_dir.clone(),
-                size_bytes: 0,
-                version,
-                os: target_os,
-                arch: target_arch,
-                error: Some(e),
-            });
-        }
-    };
-    let (tag, asset_name) = validate_official_download_url(&download_url).expect("已验证官方 URL");
-    let transport_url = match build_core_download_url(&download_url, &mirror) {
-        Ok(url) => url,
-        Err(e) => {
-            return Ok(DownloadCoreResult {
-                success: false,
-                exe_path: String::new(),
-                target_dir: target_dir.clone(),
-                size_bytes: 0,
-                version,
-                os: target_os,
-                arch: target_arch,
-                error: Some(e),
-            });
-        }
-    };
-
-    let target_path = std::path::PathBuf::from(&target_dir);
-    if let Err(e) = std::fs::create_dir_all(&target_path) {
-        return Ok(DownloadCoreResult {
-            success: false,
-            exe_path: String::new(),
-            target_dir: target_dir.clone(),
-            size_bytes: 0,
-            version,
-            os: target_os,
-            arch: target_arch,
-            error: Some(format!("创建目标目录失败: {}", e)),
-        });
-    }
-
-    // 1. 构建 HTTP 客户端
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .user_agent("FRP-GUI-Client/1.0")
-        .build()
-        .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
-
-    // 2. 获取同 release 的官方 SHA-256 校验和文件
-    let checksums_url = format!("https://github.com/fatedier/frp/releases/download/{tag}/frp_sha256_checksums.txt");
-    let checksums_resp = client
-        .get(&checksums_url)
-        .send()
-        .await
-        .map_err(|e| format!("下载官方 SHA-256 校验文件失败: {}", e))?;
-
-    if !checksums_resp.status().is_success() {
-        return Ok(DownloadCoreResult {
-            success: false,
-            exe_path: String::new(),
-            target_dir: target_dir.clone(),
-            size_bytes: 0,
-            version,
-            os: target_os,
-            arch: target_arch,
-            error: Some("下载官方 SHA-256 校验文件失败，请检查版本是否存在".to_string()),
-        });
-    }
-
-    let checksums_text = checksums_resp
-        .text()
-        .await
-        .map_err(|e| format!("读取官方 SHA-256 校验内容失败: {}", e))?;
-
-    let expected_hash = match crate::frps_deployment::checksum_for_asset(&checksums_text, asset_name) {
-        Ok(h) => h,
-        Err(e) => {
-            return Ok(DownloadCoreResult {
-                success: false,
-                exe_path: String::new(),
-                target_dir: target_dir.clone(),
-                size_bytes: 0,
-                version,
-                os: target_os,
-                arch: target_arch,
-                error: Some(e),
-            });
-        }
-    };
-
-    // 3. 下载预编译压缩包
-    let mut response = client
-        .get(&transport_url)
-        .send()
-        .await
-        .map_err(|e| format!("下载 FRP 压缩包失败: {}", e))?;
-
-    if !response.status().is_success() {
-        return Ok(DownloadCoreResult {
-            success: false,
-            exe_path: String::new(),
-            target_dir: target_dir.clone(),
-            size_bytes: 0,
-            version,
-            os: target_os,
-            arch: target_arch,
-            error: Some(format!("下载响应异常: HTTP {}", response.status())),
-        });
-    }
-
-    let mut bytes = Vec::new();
-    let mut hasher = sha2::Sha256::new();
-    loop {
-        let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|e| format!("读取下载数据流失败: {}", e))?
-        else {
-            break;
-        };
-
-        if let Err(e) = append_core_download_chunk(
-            &mut bytes,
-            &mut hasher,
-            MAX_CORE_ARCHIVE_BYTES,
-            &chunk,
-        ) {
-            return Ok(DownloadCoreResult {
-                success: false,
-                exe_path: String::new(),
-                target_dir: target_dir.clone(),
-                size_bytes: 0,
-                version,
-                os: target_os,
-                arch: target_arch,
-                error: Some(e),
-            });
-        }
-    }
-
-    // 4. 计算并校验 SHA-256 哈希
-    use sha2::Digest;
-    let actual_hash = format!("{:x}", hasher.finalize());
-    if actual_hash != expected_hash {
-        return Ok(DownloadCoreResult {
-            success: false,
-            exe_path: String::new(),
-            target_dir: target_dir.clone(),
-            size_bytes: 0,
-            version,
-            os: target_os,
-            arch: target_arch,
-            error: Some("官方安装包 SHA-256 校验和不匹配，已拒绝安装".to_string()),
-        });
-    }
-
-    // 5. 解压归档包
-    let is_zip = asset_name.ends_with(".zip") || bytes.starts_with(b"PK");
-
-    if is_zip {
-        let cursor = std::io::Cursor::new(bytes);
-        let mut archive = zip::ZipArchive::new(cursor)
-            .map_err(|e| format!("解析 Zip 压缩包失败: {}", e))?;
-
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i).map_err(|e| format!("读取 Zip 文件条目失败: {}", e))?;
-            let outpath = match file.enclosed_name() {
-                Some(path) => {
-                    let filename = path.file_name().unwrap_or(path.as_os_str());
-                    target_path.join(filename)
-                }
-                None => continue,
-            };
-
-            if (*file.name()).ends_with('/') {
-                std::fs::create_dir_all(&outpath).ok();
-            } else {
-                if let Some(p) = outpath.parent() {
-                    if !p.exists() {
-                        std::fs::create_dir_all(p).ok();
-                    }
-                }
-                let mut outfile = std::fs::File::create(&outpath)
-                    .map_err(|e| format!("写入解压文件失败: {}", e))?;
-                std::io::copy(&mut file, &mut outfile)
-                    .map_err(|e| format!("拷贝文件内容失败: {}", e))?;
-            }
-        }
-    } else {
-        // tar.gz
-        let cursor = std::io::Cursor::new(bytes);
-        let gz = flate2::read::GzDecoder::new(cursor);
-        let mut archive = tar::Archive::new(gz);
-
-        if let Ok(entries) = archive.entries() {
-            for entry in entries.flatten() {
-                let mut entry = entry;
-                if let Ok(path) = entry.path() {
-                    let filename = path.file_name().unwrap_or(path.as_os_str());
-                    let outpath = target_path.join(filename);
-                    if let Some(p) = outpath.parent() {
-                        std::fs::create_dir_all(p).ok();
-                    }
-                    entry.unpack(&outpath).ok();
-                }
-            }
-        }
-    }
-
-    // 3. 寻找解压后的 frpc / frpc.exe
-    let exe_name = if target_os == "windows" { "frpc.exe" } else { "frpc" };
-    let mut exe_path = target_path.join(exe_name);
-
-    if !exe_path.exists() {
-        if let Ok(entries) = std::fs::read_dir(&target_path) {
-            for entry in entries.flatten() {
-                let sub_path = entry.path().join(exe_name);
-                if sub_path.exists() {
-                    exe_path = sub_path;
-                    break;
-                }
-            }
-        }
-    }
-
-    if !exe_path.exists() {
-        return Ok(DownloadCoreResult {
-            success: false,
-            exe_path: String::new(),
-            target_dir: target_dir.clone(),
-            size_bytes: 0,
-            version,
-            os: target_os,
-            arch: target_arch,
-            error: Some(format!("未在解压目录中找到可执行文件 {}", exe_name)),
-        });
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o755);
-        let _ = std::fs::set_permissions(&exe_path, perms);
-    }
-
-    let size_bytes = std::fs::metadata(&exe_path).map(|m| m.len()).unwrap_or(16500000);
-
-    Ok(DownloadCoreResult {
-        success: true,
-        exe_path: exe_path.to_string_lossy().to_string(),
-        target_dir: target_dir.clone(),
-        size_bytes,
-        version,
-        os: target_os,
-        arch: target_arch,
-        error: None,
-    })
-}
 
 #[tauri::command]
 async fn run_server_preflight(
@@ -1105,6 +843,8 @@ pub fn run() {
             scan_local_frpc_cores,
             pick_core_file,
             pick_directory,
+            pick_archive_file,
+            import_local_frpc_archive,
             get_system_platform,
             start_core_download,
             list_core_download_tasks,

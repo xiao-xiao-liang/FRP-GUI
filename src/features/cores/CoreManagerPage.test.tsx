@@ -8,6 +8,8 @@ import {
   pickCoreFileNative,
   inspectLocalFrpcCore,
   pickDirectoryNative,
+  pickArchiveFileNative,
+  importLocalFrpcArchive,
   scanLocalFrpcCores,
   fetchGitHubReleases,
   startCoreDownload,
@@ -21,6 +23,8 @@ vi.mock('../../services/ipc', async (importOriginal) => ({
   pickCoreFileNative: vi.fn(),
   inspectLocalFrpcCore: vi.fn(),
   pickDirectoryNative: vi.fn(),
+  pickArchiveFileNative: vi.fn(),
+  importLocalFrpcArchive: vi.fn(),
   scanLocalFrpcCores: vi.fn(),
   detectHostSystemPlatform: vi.fn(),
   fetchGitHubReleases: vi.fn().mockResolvedValue([]),
@@ -78,7 +82,8 @@ describe('CoreManagerPage - Task 1: 本地核心原生选择与校验边界', ()
     // 列表工具栏不再提供重复的“+ 选择本地 FRP 文件夹”按钮
     expect(screen.queryByRole('button', { name: /\+ 选择本地 FRP 文件夹/ })).not.toBeInTheDocument();
 
-    await userEvent.setup().click(screen.getByRole('button', { name: '导入本地 FRP' }));
+    await userEvent.setup().click(screen.getByRole('button', { name: /导入本地 FRP/ }));
+    await userEvent.setup().click(screen.getByText('选择本地已解压目录'));
 
     await waitFor(() => {
       expect(scanLocalFrpcCores).toHaveBeenCalledWith('D:\\frp-archives');
@@ -87,6 +92,33 @@ describe('CoreManagerPage - Task 1: 本地核心原生选择与校验边界', ()
     expect(onAddCustomCore).toHaveBeenNthCalledWith(1, expect.objectContaining({ version: 'v0.70.1', path: 'D:\\frp-070\\frpc.exe' }));
     expect(onAddCustomCore).toHaveBeenNthCalledWith(2, expect.objectContaining({ version: 'v0.71.0', path: 'D:\\frp-071\\frpc.exe' }));
     expect(feishuToast.success).toHaveBeenCalledWith('已识别 2 个可用 FRPC 核心，跳过 1 项');
+  });
+
+  it('支持导入官方压缩包并自动解压验真入库', async () => {
+    vi.mocked(pickArchiveFileNative).mockResolvedValue('D:\\Downloads\\frp_0.61.1_windows_amd64.zip');
+    vi.mocked(importLocalFrpcArchive).mockResolvedValue({
+      path: 'C:\\Users\\AppData\\cores\\frp_0.61.1\\frpc.exe',
+      version: 'v0.61.1',
+      os: 'windows',
+      arch: 'amd64',
+      sizeBytes: 15400000,
+    });
+    const onAddCustomCore = vi.fn();
+
+    render(<CoreManagerPage cores={[]} activeCoreId="" onAddCustomCore={onAddCustomCore} onSelectCore={vi.fn()} />);
+
+    await userEvent.setup().click(screen.getByRole('button', { name: /导入本地 FRP/ }));
+    await userEvent.setup().click(screen.getByText('导入官方压缩包 (.zip, .tar.gz)'));
+
+    await waitFor(() => {
+      expect(pickArchiveFileNative).toHaveBeenCalledTimes(1);
+      expect(importLocalFrpcArchive).toHaveBeenCalledWith('D:\\Downloads\\frp_0.61.1_windows_amd64.zip');
+      expect(onAddCustomCore).toHaveBeenCalledWith(expect.objectContaining({
+        version: 'v0.61.1',
+        path: 'C:\\Users\\AppData\\cores\\frp_0.61.1\\frpc.exe',
+      }));
+    });
+    expect(feishuToast.success).toHaveBeenCalledWith(expect.stringContaining('已导入可用 FRPC 核心: v0.61.1'));
   });
 
   it('默认国内镜像下载时传递官方资产地址与镜像标识，不传递改写后的镜像 URL', async () => {
@@ -130,10 +162,12 @@ describe('CoreManagerPage - Task 1: 本地核心原生选择与校验边界', ()
     });
   });
 
-  it('目录扫描失败时不新增、不设默认，并显示扫描错误', async () => {
-    vi.mocked(pickDirectoryNative).mockResolvedValue('D:\\frp');
+  it('选择本地 FRP 目录失败时显示错误 Toast，不登记核心', async () => {
+    vi.mocked(pickDirectoryNative).mockResolvedValue('D:\\invalid-frp');
     vi.mocked(scanLocalFrpcCores).mockResolvedValue({
-      recognized: [], skipped: [], error: '所选目录无法读取，请选择包含 FRP 文件的目录',
+      recognized: [],
+      skipped: [],
+      error: '所选目录无法读取，请选择包含 FRP 文件的目录',
     });
     const onAddCustomCore = vi.fn();
     const onSelectCore = vi.fn();
@@ -147,7 +181,8 @@ describe('CoreManagerPage - Task 1: 本地核心原生选择与校验边界', ()
       />
     );
 
-    await userEvent.setup().click(screen.getByRole('button', { name: '导入本地 FRP' }));
+    await userEvent.setup().click(screen.getByRole('button', { name: /导入本地 FRP/ }));
+    await userEvent.setup().click(screen.getByText('选择本地已解压目录'));
 
     await waitFor(() => {
       expect(feishuToast.error).toHaveBeenCalledWith('所选目录无法读取，请选择包含 FRP 文件的目录');
@@ -171,7 +206,8 @@ describe('CoreManagerPage - Task 1: 本地核心原生选择与校验边界', ()
       />
     );
 
-    await userEvent.setup().click(screen.getByRole('button', { name: '导入本地 FRP' }));
+    await userEvent.setup().click(screen.getByRole('button', { name: /导入本地 FRP/ }));
+    await userEvent.setup().click(screen.getByText('选择本地已解压目录'));
 
     await waitFor(() => {
       expect(pickDirectoryNative).toHaveBeenCalledTimes(1);
@@ -199,7 +235,8 @@ describe('CoreManagerPage - Task 1: 本地核心原生选择与校验边界', ()
       />
     );
 
-    await userEvent.setup().click(screen.getByRole('button', { name: '导入本地 FRP' }));
+    await userEvent.setup().click(screen.getByRole('button', { name: /导入本地 FRP/ }));
+    await userEvent.setup().click(screen.getByText('选择本地已解压目录'));
 
     await waitFor(() => {
       expect(feishuToast.warning).toHaveBeenCalledWith(
@@ -239,7 +276,7 @@ describe('CoreManagerPage - Task 1: 本地核心原生选择与校验边界', ()
     );
 
     // 打开编辑弹窗
-    const editButtons = screen.getAllByRole('button', { name: '更改' });
+    const editButtons = await screen.findAllByRole('button', { name: '更改' });
     await userEvent.setup().click(editButtons[0]);
     expect(screen.getByText('更改 FRP 核心配置')).toBeInTheDocument();
 
@@ -288,7 +325,7 @@ describe('CoreManagerPage - Task 1: 本地核心原生选择与校验边界', ()
       />
     );
 
-    const editButtons = screen.getAllByRole('button', { name: '更改' });
+    const editButtons = await screen.findAllByRole('button', { name: '更改' });
     await userEvent.setup().click(editButtons[0]);
     const pathInput = screen.getByPlaceholderText('例如: D:\\Development-Kits\\frp\\frpc.exe');
 
@@ -339,7 +376,7 @@ describe('CoreManagerPage - Task 1: 本地核心原生选择与校验边界', ()
       />
     );
 
-    const editButtons = screen.getAllByRole('button', { name: '更改' });
+    const editButtons = await screen.findAllByRole('button', { name: '更改' });
     await userEvent.setup().click(editButtons[0]);
     const pathInput = screen.getByPlaceholderText('例如: D:\\Development-Kits\\frp\\frpc.exe');
 
@@ -421,7 +458,7 @@ describe('CoreManagerPage - Task 1: 本地核心原生选择与校验边界', ()
       expect(screen.getByText('下载量')).toBeInTheDocument();
       expect(screen.getByText('发布时间')).toBeInTheDocument();
       expect(screen.getByText('状态')).toBeInTheDocument();
-      expect(screen.getByText('已下载')).toBeInTheDocument();
+      expect(await screen.findByText('已下载')).toBeInTheDocument();
 
       // 不存在孤立重复的“版本号”或“核心版本”表头列
       const tableHeaders = screen.getAllByRole('columnheader').map((th) => th.textContent);
@@ -560,6 +597,373 @@ describe('CoreManagerPage - Task 1: 本地核心原生选择与校验边界', ()
       expect(feishuToast.success).toHaveBeenCalledWith(
         expect.stringContaining('已复制下载链接')
       );
+    });
+
+    it('在跨公网加载 GitHub Releases 期间呈现飞书流光骨架屏，数据就绪后平滑替换为真实数据', async () => {
+      let resolveReleases: (val: any) => void;
+      const releasesPromise = new Promise((resolve) => {
+        resolveReleases = resolve;
+      });
+      vi.mocked(fetchGitHubReleases).mockImplementation(() => releasesPromise as any);
+
+      render(
+        <CoreManagerPage
+          cores={[]}
+          activeCoreId=""
+          onSelectCore={vi.fn()}
+          onAddCustomCore={vi.fn()}
+        />
+      );
+
+      // 1. 在网络等待期间：表格视图渲染流光骨架屏数据行 (data-testid="table-skeleton-row")
+      const skeletonRows = screen.getAllByTestId('table-skeleton-row');
+      expect(skeletonRows.length).toBeGreaterThanOrEqual(6);
+      expect(skeletonRows[0].querySelector('.feishu-skeleton')).toBeTruthy();
+
+      // 2. 模拟网络请求完成并返回真实 Release 数据
+      resolveReleases!([
+        {
+          tag: 'v0.71.0',
+          name: 'Release v0.71.0',
+          publishedAt: '2026-08-14T00:00:00Z',
+          downloadCount: 52300,
+          assets: [
+            {
+              name: 'frp_0.71.0_windows_amd64.zip',
+              size: 13107200,
+              downloadCount: 52300,
+              downloadUrl: 'https://github.com/fatedier/frp/releases/download/v0.71.0/frp_0.71.0_windows_amd64.zip',
+            },
+          ],
+        },
+      ]);
+
+      // 3. 数据返回后，骨架屏消失，真实版本数据正常展示
+      await waitFor(() => {
+        expect(screen.queryByTestId('table-skeleton-row')).toBeNull();
+        expect(screen.getByText('v0.71.0')).toBeInTheDocument();
+      });
+    });
+
+    it('卡片模式下在跨公网加载 GitHub Releases 期间呈现 CoreCardSkeleton 网格骨架屏', async () => {
+      localStorage.setItem('frp_gui_core_view_mode', 'card');
+      let resolveReleases: (val: any) => void;
+      const releasesPromise = new Promise((resolve) => {
+        resolveReleases = resolve;
+      });
+      vi.mocked(fetchGitHubReleases).mockImplementation(() => releasesPromise as any);
+
+      render(
+        <CoreManagerPage
+          cores={[]}
+          activeCoreId=""
+          onSelectCore={vi.fn()}
+          onAddCustomCore={vi.fn()}
+        />
+      );
+
+      // 卡片网格骨架屏已渲染
+      expect(screen.getByTestId('core-cards-skeleton')).toBeInTheDocument();
+      const cardSkeletons = screen.getAllByTestId('core-card-skeleton');
+      expect(cardSkeletons).toHaveLength(6);
+
+      // 模拟返回
+      resolveReleases!([
+        {
+          tag: 'v0.71.0',
+          name: 'Release v0.71.0',
+          publishedAt: '2026-08-14T00:00:00Z',
+          downloadCount: 52300,
+          assets: [
+            {
+              name: 'frp_0.71.0_windows_amd64.zip',
+              size: 13107200,
+              downloadCount: 52300,
+              downloadUrl: 'https://example.com/frp.zip',
+            },
+          ],
+        },
+      ]);
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('core-cards-skeleton')).toBeNull();
+        expect(screen.getByText('v0.71.0')).toBeInTheDocument();
+      });
+    });
+
+    it('本地存在已下载核心且版本库无缓存时，首次网络加载期间呈现飞书骨架屏而不是半成品数据行，数据就绪后平滑替换为完整图二', async () => {
+      let resolveReleases: (val: any) => void;
+      const releasesPromise = new Promise((resolve) => {
+        resolveReleases = resolve;
+      });
+      vi.mocked(fetchGitHubReleases).mockImplementation(() => releasesPromise as any);
+
+      render(
+        <CoreManagerPage
+          cores={[
+            {
+              id: 'c1',
+              name: '本地 v0.71.0',
+              version: 'v0.71.0',
+              os: 'windows',
+              arch: 'amd64',
+              path: 'C:\\frp_0.71.0\\frpc.exe',
+              isDefault: true,
+              isCustom: false,
+              status: 'ready',
+              downloadDate: '2026/9/7',
+              sizeBytes: 16500000,
+            },
+            {
+              id: 'c2',
+              name: '本地 v0.68.1',
+              version: 'v0.68.1',
+              os: 'windows',
+              arch: 'amd64',
+              path: 'C:\\frp_0.68.1\\frpc.exe',
+              isDefault: false,
+              isCustom: false,
+              status: 'ready',
+              downloadDate: '2026/9/7',
+              sizeBytes: 16500000,
+            },
+          ]}
+          activeCoreId="c1"
+          onSelectCore={vi.fn()}
+          onAddCustomCore={vi.fn()}
+        />
+      );
+
+      // 1. 无缓存首次加载时：渲染流光骨架屏数据行，坚决不渲染缺胳膊少腿的半成品行
+      const skeletonRows = screen.getAllByTestId('table-skeleton-row');
+      expect(skeletonRows.length).toBeGreaterThanOrEqual(6);
+      expect(screen.queryByText('2026/9/7')).toBeNull();
+
+      // 2. 远程数据就绪
+      resolveReleases!([
+        {
+          tag: 'v0.71.0',
+          name: 'Release v0.71.0',
+          publishedAt: '2026-08-14T00:00:00Z',
+          downloadCount: 89447,
+          assets: [{ name: 'frp_0.71.0_windows_amd64.zip', size: 16672358, downloadUrl: 'https://example.com/frp.zip' }],
+        },
+        {
+          tag: 'v0.68.1',
+          name: 'Release v0.68.1',
+          publishedAt: '2026-04-13T00:00:00Z',
+          downloadCount: 235945,
+          assets: [{ name: 'frp_0.68.1_windows_amd64.zip', size: 16777216, downloadUrl: 'https://example.com/frp68.zip' }],
+        },
+      ]);
+
+      // 3. 骨架屏消失，渲染完整官方数据（包含真实下载量与发布时间）
+      await waitFor(() => {
+        expect(screen.queryByTestId('table-skeleton-row')).toBeNull();
+        expect(screen.getByText('89,447')).toBeInTheDocument();
+        expect(screen.getByText('235,945')).toBeInTheDocument();
+      });
+    });
+
+    it('存在本地持久化版本缓存时，初次渲染瞬间直出完整版本库（命中缓存零骨架屏），并在后台异步静默完成校验', async () => {
+      const cachedReleases = [
+        {
+          tag: 'v0.71.0',
+          name: 'Release v0.71.0',
+          publishedAt: '2026-08-14T00:00:00Z',
+          downloadCount: 89447,
+          assets: [{ name: 'frp_0.71.0_windows_amd64.zip', size: 16672358, downloadUrl: 'https://example.com/frp.zip' }],
+        },
+      ];
+      localStorage.setItem('frp_gui_online_releases_cache', JSON.stringify(cachedReleases));
+
+      let resolveBackground: (val: any) => void;
+      const bgPromise = new Promise((resolve) => {
+        resolveBackground = resolve;
+      });
+      vi.mocked(fetchGitHubReleases).mockImplementation(() => bgPromise as any);
+
+      render(
+        <CoreManagerPage
+          cores={[
+            {
+              id: 'c1',
+              name: '本地 v0.71.0',
+              version: 'v0.71.0',
+              os: 'windows',
+              arch: 'amd64',
+              path: 'C:\\frp_0.71.0\\frpc.exe',
+              isDefault: true,
+              isCustom: false,
+              status: 'ready',
+              sizeBytes: 16500000,
+            },
+          ]}
+          activeCoreId="c1"
+          onSelectCore={vi.fn()}
+          onAddCustomCore={vi.fn()}
+        />
+      );
+
+      // 1. 命中缓存瞬间直出，骨架屏为 0
+      expect(screen.queryByTestId('table-skeleton-row')).toBeNull();
+      expect(screen.getByText('v0.71.0')).toBeInTheDocument();
+      expect(screen.getByText('89,447')).toBeInTheDocument();
+
+      // 2. 后台静默完成校验更新
+      resolveBackground!([
+        {
+          tag: 'v0.71.0',
+          name: 'Release v0.71.0',
+          publishedAt: '2026-08-14T00:00:00Z',
+          downloadCount: 90000,
+          assets: [{ name: 'frp_0.71.0_windows_amd64.zip', size: 16672358, downloadUrl: 'https://example.com/frp.zip' }],
+        },
+      ]);
+
+      await waitFor(() => {
+        expect(screen.getByText('90,000')).toBeInTheDocument();
+      });
+    });
+
+    it('在已有数据状态下点击刷新按钮，只在后台旋转指示，不将现有数据回退为骨架屏', async () => {
+      const user = userEvent.setup();
+      const cachedReleases = [
+        {
+          tag: 'v0.71.0',
+          name: 'Release v0.71.0',
+          publishedAt: '2026-08-14T00:00:00Z',
+          downloadCount: 89447,
+          assets: [{ name: 'frp_0.71.0_windows_amd64.zip', size: 16672358, downloadUrl: 'https://example.com/frp.zip' }],
+        },
+      ];
+      localStorage.setItem('frp_gui_online_releases_cache', JSON.stringify(cachedReleases));
+      vi.mocked(fetchGitHubReleases).mockResolvedValue(cachedReleases);
+
+      render(
+        <CoreManagerPage
+          cores={[]}
+          activeCoreId=""
+          onSelectCore={vi.fn()}
+          onAddCustomCore={vi.fn()}
+        />
+      );
+
+      // 已有数据就绪
+      expect(screen.getByText('v0.71.0')).toBeInTheDocument();
+
+      // 点击刷新按钮
+      const refreshBtn = screen.getByRole('button', { name: /刷新 GitHub Releases 版本库/ });
+      await user.click(refreshBtn);
+
+      // 绝不回退为骨架屏，数据持续可见
+      expect(screen.queryByTestId('table-skeleton-row')).toBeNull();
+      expect(screen.getByText('v0.71.0')).toBeInTheDocument();
+    });
+  });
+
+  describe('Task 5: 表格与卡片视图平滑切换与搜索状态共享', () => {
+    it('支持在表格视图与卡片视图间平滑切换，工具栏保持稳定，并持久化偏好', async () => {
+      const user = userEvent.setup();
+      const cachedReleases = [
+        {
+          tag: 'v0.71.0',
+          name: 'Release v0.71.0',
+          publishedAt: '2026-08-14T00:00:00Z',
+          downloadCount: 89447,
+          assets: [{ name: 'frp_0.71.0_windows_amd64.zip', size: 16672358, downloadUrl: 'https://example.com/frp.zip' }],
+        },
+        {
+          tag: 'v0.70.1',
+          name: 'Release v0.70.1',
+          publishedAt: '2026-07-23T00:00:00Z',
+          downloadCount: 99373,
+          assets: [{ name: 'frp_0.70.1_windows_amd64.zip', size: 13958210, downloadUrl: 'https://example.com/frp70.zip' }],
+        },
+      ];
+      localStorage.setItem('frp_gui_online_releases_cache', JSON.stringify(cachedReleases));
+      vi.mocked(fetchGitHubReleases).mockResolvedValue(cachedReleases);
+
+      render(
+        <CoreManagerPage
+          cores={[]}
+          activeCoreId=""
+          onSelectCore={vi.fn()}
+          onAddCustomCore={vi.fn()}
+        />
+      );
+
+      // 1. 默认表格视图渲染
+      expect(screen.getByText('FRP 核心引擎管理列表')).toBeInTheDocument();
+      expect(screen.getByRole('table')).toBeInTheDocument();
+      expect(screen.getByText('v0.71.0')).toBeInTheDocument();
+      expect(screen.getByText('v0.70.1')).toBeInTheDocument();
+
+      // 2. 点击卡片视图切换按钮
+      const cardViewBtn = screen.getByRole('button', { name: '卡片视图' });
+      await user.click(cardViewBtn);
+
+      // 验证已切换为卡片网格，且表格已平滑卸下
+      expect(screen.queryByRole('table')).toBeNull();
+      expect(screen.getByText('v0.71.0')).toBeInTheDocument();
+      expect(screen.getByText('v0.70.1')).toBeInTheDocument();
+      expect(localStorage.getItem('frp_gui_core_view_mode')).toBe('card');
+
+      // 3. 点击表格视图切换按钮切回
+      const tableViewBtn = screen.getByRole('button', { name: '表格视图' });
+      await user.click(tableViewBtn);
+
+      expect(screen.getByRole('table')).toBeInTheDocument();
+      expect(localStorage.getItem('frp_gui_core_view_mode')).toBe('table');
+    });
+
+    it('在工具栏中搜索过滤时，卡片视图与表格视图共享过滤结果', async () => {
+      const user = userEvent.setup();
+      const cachedReleases = [
+        {
+          tag: 'v0.71.0',
+          name: 'Release v0.71.0',
+          publishedAt: '2026-08-14T00:00:00Z',
+          downloadCount: 89447,
+          assets: [{ name: 'frp_0.71.0_windows_amd64.zip', size: 16672358, downloadUrl: 'https://example.com/frp.zip' }],
+        },
+        {
+          tag: 'v0.70.1',
+          name: 'Release v0.70.1',
+          publishedAt: '2026-07-23T00:00:00Z',
+          downloadCount: 99373,
+          assets: [{ name: 'frp_0.70.1_windows_amd64.zip', size: 13958210, downloadUrl: 'https://example.com/frp70.zip' }],
+        },
+      ];
+      localStorage.setItem('frp_gui_online_releases_cache', JSON.stringify(cachedReleases));
+      vi.mocked(fetchGitHubReleases).mockResolvedValue(cachedReleases);
+
+      render(
+        <CoreManagerPage
+          cores={[]}
+          activeCoreId=""
+          onSelectCore={vi.fn()}
+          onAddCustomCore={vi.fn()}
+        />
+      );
+
+      // 点击“搜索”按钮展开飞书原生搜索框
+      await user.click(screen.getByText('搜索'));
+
+      // 在通用搜索框输入 "0.71"
+      const searchInput = screen.getByPlaceholderText('在核心列表中搜索版本、路径或名称...');
+      await user.type(searchInput, '0.71');
+
+      // 表格中仅展示 v0.71.0，v0.70.1 被过滤
+      expect(screen.getByText('v0.71.0')).toBeInTheDocument();
+      expect(screen.queryByText('v0.70.1')).toBeNull();
+
+      // 切换到卡片视图
+      await user.click(screen.getByRole('button', { name: '卡片视图' }));
+
+      // 卡片视图依然保持该过滤结果
+      expect(screen.getByText('v0.71.0')).toBeInTheDocument();
+      expect(screen.queryByText('v0.70.1')).toBeNull();
     });
   });
 });

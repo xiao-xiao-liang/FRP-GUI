@@ -624,6 +624,50 @@ export async function pickDirectoryNative(): Promise<string | null> {
   return null;
 }
 
+/**
+ * 唤起系统原生压缩包选择对话框选择官方 FRP 归档 (.zip, .tar.gz, .tgz)
+ */
+export async function pickArchiveFileNative(): Promise<string | null> {
+  if (isTauriEnv()) {
+    try {
+      const selected = await tauriInvoke<string | null>('pick_archive_file');
+      return selected || null;
+    } catch (err) {
+      console.error('Failed to pick archive file natively:', err);
+      return null;
+    }
+  }
+
+  // Vite 开发服务器环境下原生压缩包选择器
+  try {
+    const res = await fetch('/api/dev/pick-archive');
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.path) {
+        return data.path;
+      }
+      if (data && data.path === null) {
+        return null;
+      }
+    }
+  } catch {
+    // 忽略异常
+  }
+
+  return null;
+}
+
+/**
+ * 导入官方 FRP 压缩包：在后台自动解压、校验架构与版本、原子安装至受管核心库
+ */
+export async function importLocalFrpcArchive(archivePath: string): Promise<RecognizedLocalFrpcCore> {
+  if (!isTauriEnv()) {
+    throw new Error('浏览器预览不能解压与导入本机 FRP 压缩包，请在 FRP-GUI 桌面端执行');
+  }
+
+  return await tauriInvoke<RecognizedLocalFrpcCore>('import_local_frpc_archive', { archivePath });
+}
+
 export interface RecognizedLocalFrpcCore {
   path: string;
   version: string;

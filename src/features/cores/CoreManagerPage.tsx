@@ -8,6 +8,8 @@ import {
   detectHostSystemPlatform,
   matchReleaseAsset,
   pickDirectoryNative,
+  pickArchiveFileNative,
+  importLocalFrpcArchive,
   startCoreDownload,
   listCoreDownloadTasks,
   subscribeCoreDownloadProgress,
@@ -16,6 +18,13 @@ import {
   MatchedAssetResult,
 } from '../../services/ipc';
 import { Button } from '../../components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from '../../components/ui/dropdown-menu';
 import { FeishuInput } from '../../components/ui/feishu-table/FeishuInput';
 import { FeishuDialog } from '../../components/ui/FeishuDialog';
 import { FeishuSelect } from '../../components/ui/feishu-select';
@@ -28,7 +37,7 @@ import {
 } from '../../components/ui/feishu-table';
 import { FeishuEmptyState } from '../../components/ui/feishu-table/FeishuEmptyState';
 import { PluginIcon, DownloadIcon } from '../../components/icons';
-import { CoreCard } from './CoreCard';
+import { CoreCard, CoreCardSkeleton } from './CoreCard';
 import { CoreAvailability, deriveCoreReleaseRows } from './core-version-library';
 import { cn } from '../../lib/utils';
 import {
@@ -51,7 +60,8 @@ import {
   LayoutGrid,
   Table as TableIcon,
   Link2,
-  Search,
+  Package,
+  ChevronDown,
 } from 'lucide-react';
 import { feishuToast } from '../../components/ui/FeishuToast';
 import { FeishuTooltip } from '../../components/ui/tooltip';
@@ -131,6 +141,32 @@ const MIRROR_OPTIONS = [
   { value: 'official', label: 'GitHub 官方源 (直连海外)' },
 ];
 
+export const RELEASES_CACHE_KEY = 'frp_gui_online_releases_cache';
+
+export const loadCachedGitHubReleases = (): any[] => {
+  try {
+    const raw = localStorage.getItem(RELEASES_CACHE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed;
+    }
+    return [];
+  } catch {
+    return [];
+  }
+};
+
+export const saveCachedGitHubReleases = (releases: any[]) => {
+  try {
+    if (Array.isArray(releases) && releases.length > 0) {
+      localStorage.setItem(RELEASES_CACHE_KEY, JSON.stringify(releases));
+    }
+  } catch (err) {
+    console.warn('Failed to save GitHub releases cache:', err);
+  }
+};
+
 export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
   cores,
   activeCoreId,
@@ -139,9 +175,9 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
   onUpdateCore,
   onDeleteCore,
 }) => {
-  const [onlineReleases, setOnlineReleases] = useState<any[]>([]);
+  const [onlineReleases, setOnlineReleases] = useState<any[]>(() => loadCachedGitHubReleases());
   const [downloadTasks, setDownloadTasks] = useState<CoreDownloadTask[]>([]);
-  const [loadingReleases, setLoadingReleases] = useState(false);
+  const [loadingReleases, setLoadingReleases] = useState<boolean>(true);
 
   // 视图模式：卡片视图 (card) 或 表格视图 (table)，持久化用户偏好
   const [viewMode, setViewMode] = useState<'card' | 'table'>(() => {
@@ -152,8 +188,6 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
     setViewMode(mode);
     localStorage.setItem('frp_gui_core_view_mode', mode);
   };
-
-  const [searchKeyword, setSearchKeyword] = useState<string>('');
 
   // 用户偏好的镜像源持久化
   const [selectedMirror, setSelectedMirror] = useState<string>(() => {
@@ -323,7 +357,10 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
     setLoadingReleases(true);
     try {
       const list = await fetchGitHubReleases();
-      setOnlineReleases(list);
+      if (Array.isArray(list) && list.length > 0) {
+        setOnlineReleases(list);
+        saveCachedGitHubReleases(list);
+      }
     } catch (e: any) {
       feishuToast.error(`获取版本列表失败: ${e.message}`);
     } finally {
@@ -361,6 +398,46 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
     };
     onAddCustomCore(newCore);
     feishuToast.success(`已导入可用 FRPC 核心: ${fileName} (${inspected.version})`);
+  };
+
+  const handleImportArchive = async () => {
+    if (!isTauriEnv()) {
+      feishuToast.warning('浏览器预览不能解压与导入本机 FRP 压缩包，请在 FRP-GUI 桌面端导入核心');
+      return;
+    }
+
+    const selectedFile = await pickArchiveFileNative();
+    if (!selectedFile) return;
+
+    try {
+      feishuToast.info('正在解压并校验 FRP 压缩包...');
+      const recognized = await importLocalFrpcArchive(selectedFile);
+
+      const existingPaths = new Set(cores.map((core) => core.path.toLowerCase()));
+      if (existingPaths.has(recognized.path.toLowerCase())) {
+        feishuToast.warning(`该核心已存在于版本库中 (${recognized.version})`);
+        return;
+      }
+
+      const coreId = `custom_${Date.now()}`;
+      onAddCustomCore({
+        id: coreId,
+        name: `FRP ${recognized.version}`,
+        version: recognized.version,
+        arch: recognized.arch,
+        os: recognized.os,
+        path: recognized.path,
+        isDefault: false,
+        isCustom: true,
+        downloadDate: new Date().toLocaleDateString(),
+        status: 'ready',
+        sizeBytes: recognized.sizeBytes,
+      });
+
+      feishuToast.success(`已导入可用 FRPC 核心: ${recognized.version} (${recognized.os}/${recognized.arch})`);
+    } catch (err: any) {
+      feishuToast.error(err?.message || String(err) || '导入 FRP 压缩包失败');
+    }
   };
 
   const handleImportLocalDirectory = async () => {
@@ -620,6 +697,14 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
     };
 
     // 官方 Release 是唯一版本列表来源；仅把当前电脑 OS/架构相符的已验证 FRPC 合并为“已下载”。
+    if (onlineReleases.length === 0) {
+      // 首次加载且无版本库缓存时，不提前吐出缺少下载量和发布日期的半成品行，交由骨架屏呈现
+      if (loadingReleases) {
+        return [];
+      }
+      return cores.map(toLocalOnlyRow);
+    }
+
     const releaseRows = deriveCoreReleaseRows({
       releases: onlineReleases,
       cores,
@@ -665,22 +750,13 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
       .forEach((core) => list.push(toLocalOnlyRow(core)));
 
     return list;
-  }, [cores, activeCoreId, downloadTasks, hostPlatform, onlineReleases]);
+  }, [cores, activeCoreId, downloadTasks, hostPlatform, onlineReleases, loadingReleases]);
+
+  // 首次进入无缓存且网络在途时，启用全量骨架屏；命中缓存时 0ms 直接渲染
+  const isInitialLoading = loadingReleases && onlineReleases.length === 0;
 
   const filteredData = unifiedData;
 
-  // 卡片搜索过滤数据
-  const cardFilteredData = useMemo(() => {
-    if (!searchKeyword.trim()) return filteredData;
-    const q = searchKeyword.toLowerCase();
-    return filteredData.filter(
-      (item) =>
-        item.name.toLowerCase().includes(q) ||
-        item.version.toLowerCase().includes(q) ||
-        (item.path && item.path.toLowerCase().includes(q)) ||
-        item.platform.toLowerCase().includes(q)
-    );
-  }, [filteredData, searchKeyword]);
 
   // 统计数据
 
@@ -846,15 +922,22 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
   ], [activeCoreId, onSelectCore]);
 
   const viewModeSwitcher = (
-    <div className="flex items-center bg-[#F2F3F5] p-0.5 rounded-md border border-[#DEE0E3]">
+    <div className="relative flex items-center bg-[#F2F3F5] p-0.5 rounded-md border border-[#DEE0E3] select-none">
+      {/* 平滑滑动的白色高亮胶囊 (Sliding Indicator) */}
+      <div
+        className={cn(
+          "absolute top-0.5 bottom-0.5 w-7 bg-white rounded-[4px] shadow-xs transition-transform duration-200 ease-out pointer-events-none",
+          viewMode === 'table' ? "translate-x-7" : "translate-x-0"
+        )}
+      />
       <button
         type="button"
         onClick={() => handleSetViewMode('card')}
         title="卡片视图"
         aria-label="卡片视图"
         className={cn(
-          "p-1 rounded-sm transition-colors cursor-pointer flex items-center justify-center",
-          viewMode === 'card' ? "bg-white text-[#165DFF] shadow-xs" : "text-feishu-text-secondary hover:text-feishu-text-primary"
+          "relative z-10 w-7 h-6 rounded-sm transition-colors cursor-pointer flex items-center justify-center",
+          viewMode === 'card' ? "text-[#165DFF]" : "text-feishu-text-secondary hover:text-feishu-text-primary"
         )}
       >
         <LayoutGrid className="w-3.5 h-3.5" />
@@ -865,8 +948,8 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
         title="表格视图"
         aria-label="表格视图"
         className={cn(
-          "p-1 rounded-[4px] transition-colors cursor-pointer flex items-center justify-center",
-          viewMode === 'table' ? "bg-white text-[#165DFF] shadow-xs" : "text-[#646A75] hover:text-[#1F2329]"
+          "relative z-10 w-7 h-6 rounded-[4px] transition-colors cursor-pointer flex items-center justify-center",
+          viewMode === 'table' ? "text-[#165DFF]" : "text-[#646A75] hover:text-[#1F2329]"
         )}
       >
         <TableIcon className="w-3.5 h-3.5" />
@@ -885,15 +968,42 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
           </div>
 
           <div className="flex items-center gap-2.5">
-            <Button
-              size="sm"
-              variant="default"
-              onClick={handleImportLocalDirectory}
-              className="h-8 text-[13px] px-3.5 rounded-md bg-feishu-blue text-white hover:bg-feishu-blue-hover cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5 mr-1" />
-              导入本地 FRP
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="default"
+                  className="h-8 text-[13px] px-3.5 rounded-md bg-feishu-blue text-white hover:bg-feishu-blue-hover cursor-pointer inline-flex items-center"
+                >
+                  <Plus className="w-3.5 h-3.5 mr-1" />
+                  导入本地 FRP
+                  <ChevronDown className="w-3.5 h-3.5 ml-1 opacity-80" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[260px] p-1.5 shadow-lg border border-feishu-border bg-white rounded-lg">
+                <DropdownMenuItem
+                  onClick={handleImportArchive}
+                  className="cursor-pointer py-2.5 px-3 rounded-md hover:bg-[#F2F3F5] flex items-start gap-2.5 outline-none"
+                >
+                  <Package className="w-4 h-4 text-feishu-blue mt-0.5 shrink-0" />
+                  <div className="flex flex-col text-left">
+                    <span className="text-[13px] font-medium text-feishu-text-primary">导入官方压缩包 (.zip, .tar.gz)</span>
+                    <span className="text-[11px] text-feishu-text-muted mt-0.5">未解压的官方压缩包，自动解压与验真安装</span>
+                  </div>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator className="my-1 bg-[#DEE0E3]" />
+                <DropdownMenuItem
+                  onClick={handleImportLocalDirectory}
+                  className="cursor-pointer py-2.5 px-3 rounded-md hover:bg-[#F2F3F5] flex items-start gap-2.5 outline-none"
+                >
+                  <FolderOpen className="w-4 h-4 text-feishu-text-muted mt-0.5 shrink-0" />
+                  <div className="flex flex-col text-left">
+                    <span className="text-[13px] font-medium text-feishu-text-primary">选择本地已解压目录</span>
+                    <span className="text-[11px] text-feishu-text-muted mt-0.5">扫描已有解压目录，支持多版本批量识别</span>
+                  </div>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
 
             <Button
               size="sm"
@@ -910,102 +1020,69 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
         </div>
       </div>
 
-      {/* 2. 核心引擎展示区（支持表格视图与卡片视图） */}
-      {viewMode === 'table' ? (
-        <FeishuDataTable
-          title="FRP 核心引擎管理列表"
-          columns={columns}
-          data={filteredData}
-          rowKey="id"
-          selectable={false}
-          searchPlaceholder="在核心列表中搜索版本、路径或名称..."
-          customRightTools={
-            <div className="flex items-center gap-2">
-              {viewModeSwitcher}
-
-              <Button
-                size="iconSm"
-                variant="ghost"
-                onClick={loadReleases}
-                disabled={loadingReleases}
-                title="刷新 GitHub Releases 版本库"
-                className="w-8 h-8 rounded-md"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 text-feishu-text-secondary ${loadingReleases ? 'animate-spin' : ''}`} />
-              </Button>
-            </div>
+      {/* 2. 核心引擎展示区（统一外层容器与工具栏，支持表格视图与卡片视图平滑切换） */}
+      <FeishuDataTable
+        title="FRP 核心引擎管理列表"
+        columns={columns}
+        data={filteredData}
+        rowKey="id"
+        selectable={false}
+        loading={isInitialLoading}
+        searchPlaceholder="在核心列表中搜索版本、路径或名称..."
+        viewMode={viewMode}
+        renderCardView={(cardData, loading) => {
+          if (loading) {
+            return (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" data-testid="core-cards-skeleton">
+                {Array.from({ length: 6 }).map((_, idx) => (
+                  <CoreCardSkeleton key={`core-card-skeleton-${idx}`} />
+                ))}
+              </div>
+            );
           }
-        />
-      ) : (
-        <div className="bg-white rounded-xl border border-feishu-border shadow-2xs overflow-hidden">
-          {/* 卡片视图工具栏 */}
-          <div className="p-4 border-b border-[#DEE0E3] space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <h2 className="text-[15px] font-semibold text-feishu-text-primary tracking-tight">
-                  FRP 核心引擎管理列表
-                </h2>
-                <span className="text-[12px] text-feishu-text-muted tabular-nums">
-                  共 {cardFilteredData.length} 项
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className="relative">
-                  <Search className="w-3.5 h-3.5 text-feishu-text-muted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    type="text"
-                    value={searchKeyword}
-                    onChange={(e) => setSearchKeyword(e.target.value)}
-                    placeholder="在核心列表中搜索版本、路径或名称..."
-                    className="h-8 pl-8 pr-3 text-[13px] rounded-md border border-[#DEE0E3] bg-white text-feishu-text-primary focus:outline-none w-64 transition-colors"
-                  />
-                </div>
-
-                {viewModeSwitcher}
-
-                <Button
-                  size="iconSm"
-                  variant="ghost"
-                  onClick={loadReleases}
-                  disabled={loadingReleases}
-                  title="刷新 GitHub Releases 版本库"
-                  className="w-8 h-8 rounded-md"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 text-feishu-text-secondary ${loadingReleases ? 'animate-spin' : ''}`} />
-                </Button>
-              </div>
-            </div>
-
-          </div>
-
-          {/* 卡片网格区 */}
-          <div className="p-4 bg-[#F8F9FA]">
-            {cardFilteredData.length === 0 ? (
+          if (cardData.length === 0) {
+            return (
               <div className="py-12 bg-white rounded-lg border border-[#DEE0E3]">
                 <FeishuEmptyState
                   title="暂无匹配的核心引擎"
                   description="您可以调整筛选条件或点击上方按钮导入本地核心"
                 />
               </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {cardFilteredData.map((core) => (
-                  <CoreCard
-                    key={core.id}
-                    core={core}
-                    onSelect={onSelectCore}
-                    onEdit={handleOpenEditModal}
-                    onDelete={handleOpenDeleteModal}
-                    onDownload={handleOpenDownloadModal}
-                    onCopyLink={handleCopyDownloadLink}
-                  />
-                ))}
-              </div>
-            )}
+            );
+          }
+          return (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {cardData.map((core) => (
+                <CoreCard
+                  key={core.id}
+                  core={core}
+                  onSelect={onSelectCore}
+                  onEdit={handleOpenEditModal}
+                  onDelete={handleOpenDeleteModal}
+                  onDownload={handleOpenDownloadModal}
+                  onCopyLink={handleCopyDownloadLink}
+                />
+              ))}
+            </div>
+          );
+        }}
+        customRightTools={
+          <div className="flex items-center gap-2">
+            {viewModeSwitcher}
+
+            <Button
+              size="iconSm"
+              variant="ghost"
+              onClick={loadReleases}
+              disabled={loadingReleases}
+              title="刷新 GitHub Releases 版本库"
+              className="w-8 h-8 rounded-md"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-feishu-text-secondary ${loadingReleases ? 'animate-spin' : ''}`} />
+            </Button>
           </div>
-        </div>
-      )}
+        }
+      />
 
       {/* 3. 弹窗：更改/编辑已配置的 FRP 核心 */}
       <FeishuDialog
