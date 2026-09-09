@@ -10,6 +10,7 @@ import {
 } from "./FeishuFilterPopover";
 import { FeishuHeaderCell } from "./FeishuHeaderCell";
 import { FeishuEmptyState } from "./FeishuEmptyState";
+import { FeishuSkeleton } from "../feishu-skeleton";
 
 const evaluateCondition = (item: any, condition: FilterCondition): boolean => {
   const val = item[condition.field];
@@ -138,6 +139,10 @@ export interface FeishuDataTableProps<T> {
   };
   emptyText?: string;
   className?: string;
+  loading?: boolean;
+  loadingRows?: number;
+  viewMode?: 'table' | 'card';
+  renderCardView?: (data: T[], loading?: boolean) => React.ReactNode;
 }
 
 /** 估算字符串物理像素渲染宽度辅助函数 */
@@ -181,6 +186,10 @@ export function FeishuDataTable<T extends Record<string, any>>({
                                                                  pagination,
                                                                  emptyText = "暂无相关数据",
                                                                  className,
+                                                                 loading = false,
+                                                                 loadingRows = 6,
+                                                                 viewMode = "table",
+                                                                 renderCardView,
                                                                }: FeishuDataTableProps<T>) {
   // 内部选中的 Keys（如果非受控）
   const [internalSelectedKeys, setInternalSelectedKeys] = useState<(string | number)[]>([]);
@@ -664,11 +673,20 @@ export function FeishuDataTable<T extends Record<string, any>>({
         customRightTools={customRightTools}
       />
 
-      {/* 3. 核心表格区域 (显式 overflow-y-hidden 彻底杜绝意外纵向滚动条) */}
-      <div
-        ref={tableContainerRef}
-        className="flex-1 overflow-x-auto overflow-y-hidden relative custom-scrollbar animate-in fade-in duration-150"
-      >
+      {/* 3. 核心内容展示区（支持表格视图与卡片视图平滑切换） */}
+      {viewMode === "card" && renderCardView ? (
+        <div
+          key="card-view-content"
+          className="flex-1 min-h-[320px] overflow-y-auto bg-[#F8F9FA] p-4 transition-all duration-200 ease-out animate-in fade-in-50"
+        >
+          {renderCardView(paginatedData, loading)}
+        </div>
+      ) : (
+        <div
+          key="table-view-content"
+          ref={tableContainerRef}
+          className="flex-1 overflow-x-auto overflow-y-hidden relative custom-scrollbar transition-all duration-200 ease-out animate-in fade-in-50"
+        >
         <table
           className="text-left border-collapse text-[14px]"
           style={{
@@ -764,7 +782,35 @@ export function FeishuDataTable<T extends Record<string, any>>({
 
           {/* 表格内容行 */}
           <tbody className="divide-y divide-[#DEE0E3]/60 bg-white">
-          {paginatedData.length === 0 ? (
+          {loading ? (
+            Array.from({ length: loadingRows }).map((_, rIdx) => (
+              <tr key={`table-skeleton-${rIdx}`} className="h-[48px] border-b border-[#DEE0E3]/60 bg-white" data-testid="table-skeleton-row">
+                {selectable && (
+                  <td className="w-12 pl-5 pr-3 py-2.5 text-center">
+                    <FeishuSkeleton className="w-4 h-4 mx-auto rounded-[3px]" />
+                  </td>
+                )}
+                {columns.map((col, cIdx) => (
+                  <td key={`skeleton-col-${cIdx}`} className="px-3 py-2.5">
+                    <FeishuSkeleton
+                      className={cn(
+                        'h-4',
+                        cIdx === 0
+                          ? 'w-16 h-5 rounded-[4px]'
+                          : cIdx === 1
+                          ? 'w-14 h-5 rounded-full'
+                          : cIdx === columns.length - 1
+                          ? 'w-20 h-7 rounded-[6px] ml-auto'
+                          : cIdx % 2 === 0
+                          ? 'w-28'
+                          : 'w-16'
+                      )}
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))
+          ) : paginatedData.length === 0 ? (
             <tr>
               <td
                 colSpan={columns.length + (selectable ? 1 : 0)}
@@ -858,6 +904,7 @@ export function FeishuDataTable<T extends Record<string, any>>({
           </tbody>
         </table>
       </div>
+      )}
 
       {/* 4. 分页控制条 */}
       {pagination && (

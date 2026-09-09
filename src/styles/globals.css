@@ -405,3 +405,24 @@ body {
     transform: translateY(-5px);
   }
 }
+
+/* 飞书官方标准骨架屏流光动效 */
+@keyframes feishuShimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.feishu-skeleton {
+  background: linear-gradient(
+    90deg,
+    #F2F3F5 25%,
+    #EAECEF 37%,
+    #F2F3F5 63%
+  );
+  background-size: 400% 100%;
+  animation: feishuShimmer 1.6s ease-in-out infinite;
+}

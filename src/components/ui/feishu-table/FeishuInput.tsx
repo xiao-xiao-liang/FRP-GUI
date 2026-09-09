@@ -92,7 +92,7 @@ export const FeishuInput = forwardRef<FeishuInputRef, FeishuInputProps>(
           backgroundColor: disabled ? "#F5F6F7" : "#FFFFFF",
         }}
         className={cn(
-          "ud__inputWrapper relative flex items-center h-[30px] px-2 rounded-[6px] border bg-white transition-colors duration-150 cursor-text select-none",
+          "ud__inputWrapper group/input relative flex items-center h-[30px] px-2 rounded-[6px] border bg-white transition-colors duration-150 cursor-text select-none",
           status === 'error'
             ? "border-[#F53F3F]"
             : (isFocused ? "border-[#3370FF]" : "hover:border-[#3370FF]"),
@@ -127,12 +127,14 @@ export const FeishuInput = forwardRef<FeishuInputRef, FeishuInputProps>(
           {...restProps}
         />
 
-        {/* 一键清空叉号 (X) */}
+        {/* 一键清空叉号 (X)，悬浮时展示，避免常驻挤占显示空间 */}
         {allowClear && value && !disabled && (
           <button
             type="button"
             onClick={handleClear}
-            className="p-0.5 text-[#8F959E] hover:text-[#1F2329] rounded cursor-pointer shrink-0 ml-0.5 transition-colors"
+            className="hidden group-hover/input:inline-flex items-center justify-center p-0.5 text-[#8F959E] hover:text-[#1F2329] rounded cursor-pointer shrink-0 ml-0.5 transition-colors"
+            title="清空"
+            aria-label="清空"
           >
             <X className="w-3.5 h-3.5" />
           </button>

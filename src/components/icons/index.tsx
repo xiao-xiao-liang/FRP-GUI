@@ -174,19 +174,25 @@ export const ClearIcon: React.FC<IconProps> = ({ className = 'w-4 h-4', size = 1
   </svg>
 );
 
-export const HideIcon: React.FC<IconProps> = ({ className = 'w-4 h-4', size = 16, ...props }) => (
+export const VisibleLockIcon: React.FC<IconProps> = ({ className = 'w-4 h-4', size = '1em', ...props }) => (
   <svg
     width={size}
     height={size}
-    viewBox="0 0 16 16"
+    viewBox="0 0 24 24"
     fill="none"
     xmlns="http://www.w3.org/2000/svg"
+    data-icon="VisibleLockOutlined"
     className={className}
     {...props}
   >
-    <path d="M2 8.5C1.72386 8.5 1.5 8.27614 1.5 8C1.5 7.72386 1.72386 7.5 2 7.5L2 8.5ZM14 7.5C14.2761 7.5 14.5 7.72386 14.5 8C14.5 8.27614 14.2761 8.5 14 8.5L14 7.5ZM2 7.5L14 7.5L14 8.5L2 8.5L2 7.5Z" fill="#6C707E"/>
+    <path
+      d="m14.52 18.056 1.504 1.503a9.094 9.094 0 0 1-4.04.941c-3.995 0-7.479-2.52-10.453-7.562a1.864 1.864 0 0 1-.011-1.877c.783-1.36 1.609-2.536 2.477-3.528L5.304 8.84c-.79.87-1.559 1.917-2.304 3.147 2.76 4.454 5.748 6.513 8.985 6.513a7.43 7.43 0 0 0 2.535-.444Zm4.139-2.933c.797-.87 1.577-1.912 2.341-3.136C18.292 7.55 15.301 5.5 11.985 5.5c-.864 0-1.706.14-2.526.424l-1.51-1.51a9.241 9.241 0 0 1 4.035-.914c4.07 0 7.566 2.518 10.49 7.555a1.864 1.864 0 0 1-.01 1.887c-.797 1.342-1.63 2.505-2.498 3.489l-1.307-1.308Zm-6.218.853a4 4 0 0 1-4.417-4.417l4.417 4.417Zm3.535-3.536L11.56 8.024a4 4 0 0 1 4.417 4.417ZM2.21 2.21a.997.997 0 0 1 1.41-.005l18.388 18.389a.998.998 0 0 1-.004 1.41.998.998 0 0 1-1.41.004L2.205 3.619a.997.997 0 0 1 .005-1.41Z"
+      fill="currentColor"
+    />
   </svg>
 );
+
+export const HideIcon = VisibleLockIcon;
 
 export const MobileIcon: React.FC<IconProps> = ({ className = 'w-4 h-4', size = 16, ...props }) => (
   <svg
@@ -327,25 +333,25 @@ export const ShieldIcon: React.FC<IconProps> = ({ className = 'w-4 h-4', size = 
   </svg>
 );
 
-export const ShowIcon: React.FC<IconProps> = ({ className = 'w-4 h-4', size = 16, ...props }) => (
+export const VisibleIcon: React.FC<IconProps> = ({ className = 'w-4 h-4', size = '1em', ...props }) => (
   <svg
     width={size}
     height={size}
-    viewBox="0 0 16 16"
+    viewBox="0 0 24 24"
     fill="none"
     xmlns="http://www.w3.org/2000/svg"
+    data-icon="VisibleOutlined"
     className={className}
     {...props}
   >
-    <g fill="none" fillRule="evenodd">
-    <g fill="#6E6E6E" transform="translate(1 4)">
-      <rect width="1.76" height="4.994" x="8.126" y="6.429" transform="rotate(-45 9.006 8.926)"/>
-      <path d="M4.6,9.2 C2.05949015,9.2 -4e-16,7.14050985 -4e-16,4.6 C-4e-16,2.05949015 2.05949015,0 4.6,0 C7.14050985,0 9.2,2.05949015 9.2,4.6 C9.2,7.14050985 7.14050985,9.2 4.6,9.2 Z M4.6,7.6 C6.25685425,7.6 7.6,6.25685425 7.6,4.6 C7.6,2.94314575 6.25685425,1.6 4.6,1.6 C2.94314575,1.6 1.6,2.94314575 1.6,4.6 C1.6,6.25685425 2.94314575,7.6 4.6,7.6 Z"/>
-    </g>
-    <path fill="#6E6E6E" d="M9.88969094,5 C9.57081021,4.62042576 9.20247796,4.2837855 8.79461496,4 L13,4 L13,3 L8,3 L8,3.53890499 C7.38650137,3.24746356 6.71160471,3.06428711 6,3.01406563 L6,1 L15,1 L15,11 L10.6610948,11 C11.006647,10.2725957 11.1999998,9.45887778 11.1999998,8.5999999 C11.1999998,8.39730439 11.1892308,8.19712411 11.1682337,8 L13,8 L13,7 L10.9680969,7 C10.8642932,6.65121416 10.7274236,6.31666911 10.5611234,6 L13,6 L13,5 L9.88969094,5 Z"/>
-  </g>
+    <path
+      d="M11.985 18.5c3.238 0 6.236-2.06 9.015-6.513C18.292 7.55 15.3 5.5 11.985 5.5 8.67 5.5 5.689 7.549 3 11.987c2.76 4.454 5.748 6.513 8.985 6.513ZM1.502 12.89a1.782 1.782 0 0 1 .023-1.838C4.428 6.017 7.915 3.5 11.984 3.5c4.086 0 7.594 2.538 10.523 7.614l.028.048c.296.519.294 1.16-.01 1.675-3.006 5.108-6.52 7.663-10.541 7.663-4.007 0-7.501-2.537-10.482-7.61ZM12 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8Zm0-2a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"
+      fill="currentColor"
+    />
   </svg>
 );
+
+export const ShowIcon = VisibleIcon;
 
 export const TerminalIcon: React.FC<IconProps> = ({ className = 'w-4 h-4', size = 16, ...props }) => (
   <svg

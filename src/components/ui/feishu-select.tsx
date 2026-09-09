@@ -1,6 +1,9 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronDown, X } from "lucide-react";
 import { FeishuPill, FeishuPillVariant } from "./feishu-table/FeishuPill";
+
+const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 export interface FeishuSelectOption {
   value: string;
@@ -27,6 +30,7 @@ export interface FeishuSelectProps {
 /**
  * 1:1 飞书设计规范标准下拉选择器 (FeishuSelect)
  * 支持纯文字选项、Pill 状态药丸选项、自定义图标、清除按钮与流畅的展开收起动效
+ * 采用 React Portal + Fixed 坐标，彻底杜绝父级表格 overflow: hidden / auto 的遮挡裁剪问题
  */
 export const FeishuSelect: React.FC<FeishuSelectProps> = ({
   options,
@@ -43,13 +47,63 @@ export const FeishuSelect: React.FC<FeishuSelectProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const [coords, setCoords] = useState<{
+    top?: number;
+    bottom?: number;
+    left: number;
+    width: number;
+  }>({ left: 0, width: 0 });
 
   const selectedOption = options.find((opt) => opt.value === value);
 
-  // 点击外部自动收起
+  // 动态计算下拉框相对于视口的精确坐标与展开方向 (向下优先，靠近屏幕底部时自动向上翻转)
+  const updatePosition = () => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const dropdownHeight = 220; // 预估下拉菜单最大高度
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    const openUp = spaceBelow < dropdownHeight && spaceAbove > spaceBelow;
+
+    setCoords({
+      left: Math.max(0, rect.left),
+      width: Math.max(rect.width || 0, 80),
+      top: openUp ? undefined : rect.bottom + 4,
+      bottom: openUp ? window.innerHeight - rect.top + 4 : undefined,
+    });
+  };
+
+  // 展开时计算坐标，并在视口滚动或尺寸变化时保持跟随 (使用 LayoutEffect 在绘制前同步对齐)
+  useIsomorphicLayoutEffect(() => {
+    if (isOpen) {
+      updatePosition();
+      const handleScroll = (e: Event) => {
+        // 如果是在下拉选项自身内部滚动，不触发重新计算
+        if (dropdownRef.current && dropdownRef.current.contains(e.target as Node)) {
+          return;
+        }
+        updatePosition();
+      };
+      window.addEventListener("scroll", handleScroll, true);
+      window.addEventListener("resize", updatePosition);
+      return () => {
+        window.removeEventListener("scroll", handleScroll, true);
+        window.removeEventListener("resize", updatePosition);
+      };
+    }
+  }, [isOpen]);
+
+  // 点击外部自动收起（同时监听触发容器与 Portal 挂载的浮层容器）
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(target) &&
+        dropdownRef.current &&
+        !dropdownRef.current.contains(target)
+      ) {
         setIsOpen(false);
       }
     };
@@ -74,6 +128,10 @@ export const FeishuSelect: React.FC<FeishuSelectProps> = ({
 
   const handleToggle = () => {
     if (!disabled) {
+      // 打开前同步测算坐标，首帧挂载即处于正确位置，彻底杜绝从屏幕左侧飞入的动画破绽
+      if (!isOpen) {
+        updatePosition();
+      }
       setIsOpen((prev) => !prev);
     }
   };
@@ -129,13 +187,21 @@ export const FeishuSelect: React.FC<FeishuSelectProps> = ({
                   {selectedOption.label}
                 </FeishuPill>
               ) : (
-                <span className="text-[#1F2329] font-normal truncate text-[14px]">
+                <span
+                  className={`text-[#1F2329] font-normal truncate ${
+                    size === "sm" ? "text-[12px]" : size === "lg" ? "text-[15px]" : "text-[14px]"
+                  }`}
+                >
                   {selectedOption.label}
                 </span>
               )}
             </div>
           ) : (
-            <span className="text-[#8F959E] font-normal truncate text-[14px]">
+            <span
+              className={`text-[#8F959E] font-normal truncate ${
+                size === "sm" ? "text-[12px]" : size === "lg" ? "text-[15px]" : "text-[14px]"
+              }`}
+            >
               {placeholder}
             </span>
           )}
@@ -161,44 +227,61 @@ export const FeishuSelect: React.FC<FeishuSelectProps> = ({
         </div>
       </button>
 
-      {/* 浮层下拉列表 */}
-      {isOpen && (
-        <div
-          className={`absolute left-0 right-0 z-50 mt-1 min-w-[130px] rounded-[8px] border border-[#DEE0E3] bg-white p-1 shadow-[0_4px_16px_rgba(0,0,0,0.08)] animate-in fade-in zoom-in-95 duration-100 ${dropdownClassName}`}
-        >
-          <div className="max-h-[240px] overflow-y-auto space-y-0.5 custom-scrollbar">
-            {options.map((opt) => {
-              const isSelected = opt.value === value;
-              return (
-                <div
-                  key={opt.value}
-                  onClick={() => handleSelect(opt.value, opt.disabled)}
-                  className={`flex items-center justify-between px-2.5 py-1.5 rounded-[6px] text-[14px] leading-[22px] transition-colors cursor-pointer ${
-                    opt.disabled
-                      ? "text-[#C9CDD4] cursor-not-allowed bg-transparent"
-                      : isSelected
-                      ? "bg-[#E8F3FF] text-[#3370FF] font-medium"
-                      : "text-[#1F2329] hover:bg-[#F2F3F5]"
-                  }`}
-                >
-                  <div className="flex items-center gap-2 truncate">
-                    {opt.icon && <span className="shrink-0">{opt.icon}</span>}
-                    {opt.pillVariant ? (
-                      <FeishuPill variant={opt.pillVariant}>{opt.label}</FeishuPill>
-                    ) : (
-                      <span className="truncate">{opt.label}</span>
+      {/* 浮层下拉列表 (通过 React Portal 挂载到 document.body，避免受父容器 overflow 裁剪) */}
+      {isOpen &&
+        typeof document !== "undefined" &&
+        coords.width > 0 &&
+        createPortal(
+          <div
+            ref={dropdownRef}
+            style={{
+              position: "fixed",
+              left: `${coords.left}px`,
+              top: coords.top !== undefined ? `${coords.top}px` : undefined,
+              bottom: coords.bottom !== undefined ? `${coords.bottom}px` : undefined,
+              minWidth: `${coords.width}px`,
+              zIndex: 99999,
+            }}
+            className={`rounded-[8px] border border-[#DEE0E3] bg-white p-1 shadow-[0_4px_16px_rgba(0,0,0,0.12)] animate-in fade-in zoom-in-95 ${
+              coords.bottom !== undefined ? "origin-bottom" : "origin-top"
+            } duration-100 ${dropdownClassName}`}
+          >
+            <div className="max-h-[240px] overflow-y-auto space-y-0.5 custom-scrollbar">
+              {options.map((opt) => {
+                const isSelected = opt.value === value;
+                return (
+                  <div
+                    key={opt.value}
+                    onClick={() => handleSelect(opt.value, opt.disabled)}
+                    className={`flex items-center justify-between px-2.5 py-1.5 rounded-[6px] transition-colors cursor-pointer ${
+                      size === "sm" ? "text-[12px] leading-[18px]" : "text-[14px] leading-[22px]"
+                    } ${
+                      opt.disabled
+                        ? "text-[#C9CDD4] cursor-not-allowed bg-transparent"
+                        : isSelected
+                        ? "bg-[#E8F3FF] text-[#3370FF] font-medium"
+                        : "text-[#1F2329] hover:bg-[#F2F3F5]"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 truncate">
+                      {opt.icon && <span className="shrink-0">{opt.icon}</span>}
+                      {opt.pillVariant ? (
+                        <FeishuPill variant={opt.pillVariant}>{opt.label}</FeishuPill>
+                      ) : (
+                        <span className="truncate">{opt.label}</span>
+                      )}
+                    </div>
+
+                    {isSelected && (
+                      <Check className="w-3.5 h-3.5 text-[#3370FF] shrink-0 ml-2" />
                     )}
                   </div>
-
-                  {isSelected && (
-                    <Check className="w-3.5 h-3.5 text-[#3370FF] shrink-0 ml-2" />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+                );
+              })}
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 };
