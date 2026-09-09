@@ -394,9 +394,9 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({
               size="sm"
               variant="outline"
               disabled
-              className="h-8 px-3.5 text-[13px] rounded-[6px] border-[#DEE0E3] text-[#8F959E] bg-[#F2F3F5] cursor-not-allowed opacity-75"
+              className="h-8 px-3.5 text-[13px] rounded-[6px] border-[#DEE0E3] text-[#8F959E] bg-[#F2F3F5] cursor-not-allowed opacity-50"
             >
-              <RefreshIcon className="w-3.5 h-3.5 mr-1.5 shrink-0 animate-spin" />
+              <StopIcon className="w-3.5 h-3.5 mr-1.5 shrink-0" />
               停止中...
             </Button>
           ) : (
@@ -404,19 +404,12 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({
               size="sm"
               onClick={() => onToggle(profile)}
               disabled={isStarting}
-              className="h-8 px-3.5 text-[13px] rounded-[6px] bg-[#165DFF] text-white hover:bg-[#0E4FD9] cursor-pointer"
+              className={`h-8 px-3.5 text-[13px] rounded-[6px] bg-[#165DFF] text-white hover:bg-[#0E4FD9] ${
+                isStarting ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+              }`}
             >
-              {isStarting ? (
-                <>
-                  <RefreshIcon className="w-3.5 h-3.5 mr-1.5 shrink-0 animate-spin" />
-                  启动中...
-                </>
-              ) : (
-                <>
-                  <RunIcon className="w-3.5 h-3.5 mr-1.5 shrink-0" />
-                  启动连接
-                </>
-              )}
+              <RunIcon className="w-3.5 h-3.5 mr-1.5 shrink-0" />
+              {isStarting ? '启动中...' : '启动连接'}
             </Button>
           )}
         </div>

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { makeProfile } from '../test/fixtures';
-import { buildProfileSharePayload, profileCredentialReference, sanitizeProfileForStorage } from './profile-secrets';
+import {
+  buildProfileSharePayload,
+  profileCredentialReference,
+  sanitizeProfileForStorage,
+  serializeProfileSecret,
+  parseProfileSecret
+} from './profile-secrets';
 
 describe('profile-secrets', () => {
   it('本地持久化只保留方案元数据，移除 TOML 与配置中的凭据', () => {
@@ -47,5 +53,29 @@ describe('profile-secrets', () => {
     expect(payload).toMatchObject({ app: 'frp-gui', version: '1.0', name: profile.name, type: profile.type });
     expect(JSON.stringify(payload)).not.toContain('never-share-this');
     expect(payload).not.toHaveProperty('toml');
+  });
+
+  it('方案机密序列化与反序列化完整保留 rawToml 与 authToken', () => {
+    const profile = makeProfile({
+      id: 'profile-roundtrip',
+      rawToml: '[auth]\ntoken = "super-secret-roundtrip-token"',
+      config: {
+        serverAddr: 'frp.example.test',
+        serverPort: 7000,
+        authToken: 'super-secret-roundtrip-token',
+        webServer: { user: 'admin', password: 'dashboard-password-999' },
+        proxies: [],
+        visitors: [],
+      },
+    });
+
+    const serialized = serializeProfileSecret(profile);
+    expect(serialized).toContain('super-secret-roundtrip-token');
+
+    const parsed = parseProfileSecret(serialized);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.rawToml).toBe(profile.rawToml);
+    expect(parsed?.config.authToken).toBe('super-secret-roundtrip-token');
+    expect(parsed?.config.webServer?.password).toBe('dashboard-password-999');
   });
 });

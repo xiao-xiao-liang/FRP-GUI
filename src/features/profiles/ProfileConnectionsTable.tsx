@@ -423,15 +423,6 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                           >
                             修复 FRPC 核心
                           </Button>
-                        ) : record.status === 'error' ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => onViewLogs(record)}
-                            className="h-7 px-2.5 text-[11px] border-[#DEE0E3] bg-white text-[#1F2329] hover:bg-[#F2F3F5] cursor-pointer"
-                          >
-                            查看启动日志
-                          </Button>
                         ) : isRunning ? (
                           <FeishuTooltip title="停止连接">
                             <span>
@@ -455,9 +446,9 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                                 variant="outline"
                                 aria-label="停止中..."
                                 disabled
-                                className="h-7 w-7 p-0 rounded-[4px] border-[#DEE0E3] text-[#8F959E] bg-[#F2F3F5] cursor-not-allowed opacity-75"
+                                className="h-7 w-7 p-0 rounded-[4px] border-[#DEE0E3] text-[#8F959E] bg-[#F2F3F5] cursor-not-allowed opacity-50"
                               >
-                                <RefreshIcon className="w-3.5 h-3.5 shrink-0 animate-spin" />
+                                <StopIcon className="w-3.5 h-3.5 shrink-0" />
                               </Button>
                             </span>
                           </FeishuTooltip>
@@ -466,11 +457,27 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                             <span>
                               <Button
                                 size="sm"
+                                variant="outline"
                                 aria-label="启动中..."
                                 disabled
-                                className="h-7 w-7 p-0 rounded-[4px] bg-[#165DFF] text-white cursor-not-allowed opacity-75"
+                                className="h-7 w-7 p-0 rounded-[4px] border-[#DEE0E3] text-[#00B42A] bg-[#F2FCF3] cursor-not-allowed opacity-50"
                               >
-                                <RefreshIcon className="w-3.5 h-3.5 shrink-0 animate-spin" />
+                                <RunIcon className="w-3.5 h-3.5 shrink-0" />
+                              </Button>
+                            </span>
+                          </FeishuTooltip>
+                        ) : record.status === 'error' ? (
+                          <FeishuTooltip title="重新启动连接">
+                            <span>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                aria-label="重新启动连接"
+                                disabled={isBatchOperating}
+                                onClick={() => onToggle(record)}
+                                className="h-7 w-7 p-0 rounded-[4px] border-[#DEE0E3] bg-white text-[#00B42A] hover:bg-[#F2FCF3] hover:border-[#00B42A] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                <RunIcon className="w-3.5 h-3.5 shrink-0" />
                               </Button>
                             </span>
                           </FeishuTooltip>

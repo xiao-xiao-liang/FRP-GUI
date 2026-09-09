@@ -242,4 +242,22 @@ mod tests {
         assert!(!is_valid_profile_credential_reference("frp-gui/profile/profile/1"));
         assert!(!is_valid_profile_credential_reference("frp-gui/server-node/profile-1"));
     }
+
+    #[test]
+    fn test_store_and_load_profile_secret() {
+        let reference = "frp-gui/profile/test_profile_id_123".to_string();
+        let secret = r#"{"rawToml":"auth.token = \"test1234\"","config":{"authToken":"test1234"}}"#.to_string();
+        let res = super::store_profile_secret(reference.clone(), secret.clone());
+        assert!(res.is_ok(), "store_profile_secret failed: {:?}", res);
+        let loaded = super::load_profile_secret(reference.clone());
+        assert_eq!(loaded.unwrap(), Some(secret));
+        let _ = super::delete_profile_secret(reference);
+    }
+
+    #[test]
+    fn test_load_nonexistent_profile_secret() {
+        let reference = "frp-gui/profile/definitely_nonexistent_profile_id_99999999".to_string();
+        let res = super::load_profile_secret(reference);
+        assert_eq!(res.unwrap(), None);
+    }
 }

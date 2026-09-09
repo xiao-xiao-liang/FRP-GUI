@@ -233,6 +233,7 @@ export function AppLayout() {
   const [groups, setGroups] = useState<ProfileGroup[]>(() => loadProfileGroups());
   const profileSecretWritesRef = useRef<Map<string, string>>(new Map());
   const restoredProfileSecretsRef = useRef<Set<string>>(new Set());
+  const inFlightRestorationsRef = useRef<Set<string>>(new Set());
 
   const [cores, setCores] = useState<FrpCore[]>(() => {
     const cached = localStorage.getItem('frp_gui_cores');
@@ -331,27 +332,90 @@ export function AppLayout() {
       if (profile.rawToml.trim()) {
         const serialized = serializeProfileSecret(profile);
         if (profileSecretWritesRef.current.get(profile.id) !== serialized) {
-          await storeProfileSecret(reference, serialized);
-          profileSecretWritesRef.current.set(profile.id, serialized);
+          try {
+            await storeProfileSecret(reference, serialized);
+            profileSecretWritesRef.current.set(profile.id, serialized);
+          } catch (err) {
+            console.error(`Failed to store secret for profile ${profile.id}:`, err);
+          }
         }
         return null;
       }
-      if (restoredProfileSecretsRef.current.has(profile.id)) return null;
-      restoredProfileSecretsRef.current.add(profile.id);
-      const stored = await loadProfileSecret(reference);
-      const secret = stored ? parseProfileSecret(stored) : null;
-      return secret ? { id: profile.id, secret } : null;
+      if (
+        restoredProfileSecretsRef.current.has(profile.id) ||
+        inFlightRestorationsRef.current.has(profile.id)
+      ) {
+        return null;
+      }
+      inFlightRestorationsRef.current.add(profile.id);
+      try {
+        const stored = await loadProfileSecret(reference);
+        const secret = stored ? parseProfileSecret(stored) : null;
+        return secret ? { id: profile.id, secret } : null;
+      } catch (err) {
+        console.warn(`Failed to load secret for profile ${profile.id}:`, err);
+        return null;
+      } finally {
+        inFlightRestorationsRef.current.delete(profile.id);
+      }
     })).then((restored) => {
       if (cancelled) return;
+
+      // 仅在未取消且该轮批次执行完成时记录已检查 ID，天然兼容 React StrictMode 双挂载与重试
+      profiles.forEach((p) => {
+        if (!p.rawToml.trim()) {
+          restoredProfileSecretsRef.current.add(p.id);
+        }
+      });
+
       const available = new Map(
         restored.filter((entry): entry is { id: string; secret: NonNullable<typeof entry>['secret'] } => entry !== null)
           .map((entry) => [entry.id, entry.secret]),
       );
       if (available.size === 0) return;
+
+      // 预填写入记录，防止恢复触发的下一次 effect 产生重复多余写
+      for (const [id, sec] of available) {
+        profileSecretWritesRef.current.set(id, JSON.stringify(sec));
+      }
+
       setProfiles((current) => current.map((profile) => {
         const secret = available.get(profile.id);
-        return secret && !profile.rawToml ? { ...profile, ...secret } : profile;
+        if (!secret || profile.rawToml.trim()) return profile;
+        return {
+          ...profile,
+          rawToml: secret.rawToml,
+          config: {
+            ...profile.config,
+            ...secret.config,
+            authToken: profile.config.authToken ?? secret.config.authToken,
+            webServer: {
+              ...profile.config.webServer,
+              ...secret.config.webServer,
+            },
+          },
+        };
       }));
+
+      // 若用户在凭据恢复期间立即打开了编辑弹窗，同步补全 editingProfile 避免空值覆盖
+      setEditingProfile((curr) => {
+        if (!curr) return null;
+        const secret = available.get(curr.id);
+        if (!secret || curr.rawToml.trim()) return curr;
+        return {
+          ...curr,
+          rawToml: secret.rawToml,
+          config: {
+            ...curr.config,
+            ...secret.config,
+            authToken: curr.config.authToken ?? secret.config.authToken,
+            webServer: {
+              ...curr.config.webServer,
+              ...secret.config.webServer,
+            },
+          },
+        };
+      });
     }).catch((error) => {
       console.error('Failed to synchronize profile secrets with the system credential store', error);
     });
@@ -446,8 +510,9 @@ export function AppLayout() {
           nextStartTime = undefined;
           nextLastError = event.errorMessage || '进程运行异常';
           nextLastWarning = undefined;
-          if (profile.status === 'running') {
+          if (profile.status === 'running' || profile.status === 'starting') {
             nextLastFailureKind = undefined;
+            feishuToast.error(`连接“${profile.name}”启动失败：进程异常退出。请点击操作列“...”菜单选择“查看日志”，或前往“运行日志”排查详细原因`);
           }
         }
 
@@ -660,7 +725,7 @@ export function AppLayout() {
                 : item
             )
           );
-          feishuToast.error(`启动失败: ${errorMessage}`);
+          feishuToast.error(`连接“${p.name}”启动失败：${errorMessage}。请点击右侧“...”菜单查看日志或前往“运行日志”排查详细原因`);
         }
       } catch (e: any) {
         const errorMessage = e?.message || '操作异常';
@@ -680,7 +745,7 @@ export function AppLayout() {
               : item
           )
         );
-        feishuToast.error(`操作异常: ${errorMessage}`);
+        feishuToast.error(`连接“${p.name}”启动异常：${errorMessage}。请点击右侧“...”菜单查看日志或前往“运行日志”排查详细原因`);
       }
     } else {
       // 停止：先设为 stopping，清除 lastFailureKind

@@ -344,11 +344,11 @@ describe('ProfileList (我的连接表格化呈现)', () => {
       await user.click(repairBtn);
       expect(onRepairCore).toHaveBeenCalledTimes(1);
 
-      // 早退异常 (p5): 查看日志
-      const logBtn = screen.getByRole('button', { name: '查看启动日志' });
-      expect(logBtn).toBeInTheDocument();
-      await user.click(logBtn);
-      expect(onViewLogs).toHaveBeenCalledWith(expect.objectContaining({ id: 'p5' }));
+      // 异常状态 (p5): 依然保留启动按钮，提供重新启动入口，无需单独占用空间放查看日志
+      const restartBtn = screen.getByRole('button', { name: '重新启动连接' });
+      expect(restartBtn).toBeInTheDocument();
+      await user.click(restartBtn);
+      expect(onToggle).toHaveBeenCalledWith(expect.objectContaining({ id: 'p5' }));
 
       // 启动中 (p6) 与 停止中 (p7): 禁用的刷新图标按钮
       const startingBtn = screen.getByRole('button', { name: '启动中...' });
