@@ -8,13 +8,15 @@ import { FeishuPill } from '../../components/ui/feishu-table/FeishuPill';
 import { FEISHU_FONT_FAMILY } from '../../components/ui/feishu-table';
 import { PRESET_SCENARIOS } from '../../services/presets';
 import { serializeFrpcToml, parseFrpcToml, serializeFrpsToml, parseFrpsToml } from '../../services/toml-sync';
-import { testServerConnectivity } from '../../services/ipc';
+import { testServerConnectivity, loadProfileSecret } from '../../services/ipc';
+import { profileCredentialReference, parseProfileSecret } from '../../services/profile-secrets';
 import { ScenarioWizard } from './ScenarioWizard';
 import { ScenarioFormValues } from '../../services/profile-validator';
 import { 
-  AddIcon, DeleteIcon, RefreshIcon, ShowIcon, HideIcon, CheckedIcon, ErrorIcon, ShieldIcon 
+  AddIcon, DeleteIcon, RefreshIcon, ShowIcon, HideIcon, CheckedIcon, ErrorIcon, ShieldIcon,
+  VisibleLockIcon, VisibleIcon
 } from '../../components/icons';
-import { ChevronDown, Zap } from 'lucide-react';
+import { ChevronDown, Zap, Trash2 } from 'lucide-react';
 import { feishuToast } from '../../components/ui/FeishuToast';
 import { ProfileTagEditor } from '../profiles/ProfileTagEditor';
 import { normalizeTags } from '../../services/profile-organization';
@@ -101,6 +103,9 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
   // 日志配置状态 (FRPC & FRPS 统一保留 to, level, maxDays)
   const [logConfig, setLogConfig] = useState<FrpLogConfig>({ level: 'info' });
 
+  // 高级传输与运行日志折叠面板展开状态
+  const [isAdvancedExpanded, setIsAdvancedExpanded] = useState(false);
+
   // TOML 源码状态
   const [rawToml, setRawToml] = useState('');
   const [tomlError, setTomlError] = useState<string | null>(null);
@@ -133,7 +138,15 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
         const conf = editingProfile.config as FrpcConfig;
         setServerAddr(conf.serverAddr || '118.195.146.161');
         setServerPort(conf.serverPort || 7000);
-        setAuthToken(conf.authToken || '');
+        let token = conf.authToken || '';
+        if (!token && editingProfile.rawToml) {
+          try {
+            token = parseFrpcToml(editingProfile.rawToml).authToken || '';
+          } catch {
+            // ignore
+          }
+        }
+        setAuthToken(token);
         setProtocol(conf.transport?.protocol || 'tcp');
         setTlsEnable(conf.transport?.tls?.enable ?? false);
         setLogConfig(conf.log ? { ...conf.log, level: conf.log.level || 'info' } : { level: 'info' });
@@ -144,6 +157,15 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
         setFrpsBindPort(conf.bindPort || 7000);
         setFrpsVhostHttp(conf.vhostHTTPPort || 80);
         setFrpsVhostHttps(conf.vhostHTTPSPort || 443);
+        let token = conf.authToken || '';
+        if (!token && editingProfile.rawToml) {
+          try {
+            token = parseFrpsToml(editingProfile.rawToml).authToken || '';
+          } catch {
+            // ignore
+          }
+        }
+        setAuthToken(token);
         setFrpsDashboardPort(conf.webServer?.port || 7500);
         setFrpsDashboardUser(conf.webServer?.user || 'admin');
         setFrpsDashboardPwd(conf.webServer?.password || 'admin123');
@@ -176,6 +198,31 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
     setTomlError(null);
     setActiveTab('form');
   }, [editingProfile, isOpen]);
+
+  // 弹窗打开且方案机密尚未恢复（rawToml 为空）时，就地从系统凭据库按需补全机密，避免并发竞态
+  useEffect(() => {
+    if (!isOpen || !editingProfile || editingProfile.rawToml.trim()) return;
+    let active = true;
+    const reference = profileCredentialReference(editingProfile.id);
+    void Promise.resolve(loadProfileSecret(reference)).then((stored) => {
+      if (!active || !stored) return;
+      const secret = parseProfileSecret(stored);
+      if (secret) {
+        setRawToml((prev) => (prev.trim() ? prev : secret.rawToml));
+        const restoredToken = secret.config.authToken || '';
+        if (restoredToken) {
+          setAuthToken((prev) => (prev ? prev : restoredToken));
+        }
+        if (editingProfile.type === 'frps') {
+          const webPwd = secret.config.webServer?.password;
+          if (webPwd) {
+            setFrpsDashboardPwd((prev) => (prev && prev !== 'admin123' ? prev : webPwd));
+          }
+        }
+      }
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [isOpen, editingProfile]);
 
   // 从草稿切换到高级编辑模式
   const handleSwitchToAdvanced = (draft: ScenarioFormValues, selectedCoreId?: string) => {
@@ -528,7 +575,7 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
           </div>
         </div>
       }
-      width={720}
+      width={760}
       showIcon={false}
       footer={
         <div className="flex items-center justify-between w-full">
@@ -560,7 +607,7 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
         </div>
       }
     >
-      <div style={{ fontFamily: FEISHU_FONT_FAMILY }} className="space-y-4 max-h-[68vh] overflow-y-auto pr-1">
+      <div style={{ fontFamily: FEISHU_FONT_FAMILY }} className="space-y-4 max-h-[72vh] overflow-y-auto pr-1">
         {/* 错误提示条 */}
         {tomlError && (
           <div className="p-2.5 bg-[#FFF2F0] border border-[#FFCCC7] rounded-[6px] text-[13px] text-[#F53F3F] leading-relaxed flex items-center gap-2">
@@ -571,82 +618,55 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
 
         {activeTab === 'form' ? (
           <>
-            {/* 模块 1: 基础信息 */}
-            <div className="space-y-3">
-              <div className="text-[13px] font-semibold text-[#1F2329]">
-                基础信息
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="sm:col-span-2">
-                  <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
-                    方案名称 <span className="text-[#F53F3F]">*</span>
-                  </label>
-                  <FeishuInput
-                    value={profileName}
-                    onChange={(val) => setProfileName(val)}
-                    placeholder="例如: 生产 Linux SSH 穿透"
-                    containerClassName="h-8"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
-                    方案类型 <span className="text-[#F53F3F]">*</span>
-                  </label>
-                  <FeishuSelect
-                    options={[
-                      { value: 'frpc', label: '客户端 (FRPC)' },
-                      { value: 'frps', label: '服务端 (FRPS)' },
-                    ]}
-                    value={profileType}
-                    onChange={(val) => setProfileType(val as any)}
-                    size="sm"
-                    className="w-full"
-                  />
-                </div>
-              </div>
-
-              <div>
+            {/* 模块 1: 方案标识与引擎 (第 1 行紧凑栅格) */}
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+              <div className="sm:col-span-5">
                 <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
-                  方案描述说明 (选填)
+                  方案名称 <span className="text-[#F53F3F]">*</span>
                 </label>
                 <FeishuInput
-                  value={profileDescription}
-                  onChange={(val) => setProfileDescription(val)}
-                  placeholder="描述该方案的用途、穿透目标或网络环境..."
+                  value={profileName}
+                  onChange={(val) => setProfileName(val)}
+                  placeholder="例如: 生产 Linux SSH 穿透"
                   containerClassName="h-8"
                 />
               </div>
 
-              {/* 方案标签 */}
-              <ProfileTagEditor tags={tags} onChange={setTags} />
+              <div className="sm:col-span-3">
+                <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
+                  方案类型 <span className="text-[#F53F3F]">*</span>
+                </label>
+                <FeishuSelect
+                  options={[
+                    { value: 'frpc', label: '客户端 (FRPC)' },
+                    { value: 'frps', label: '服务端 (FRPS)' },
+                  ]}
+                  value={profileType}
+                  onChange={(val) => setProfileType(val as any)}
+                  size="sm"
+                  className="w-full"
+                />
+              </div>
 
-              {profileType === 'frpc' && (
-                <div>
-                  <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
-                    FRP 核心版本 <span className="text-[#F53F3F]">*</span>
-                  </label>
-                  <FeishuSelect
-                    options={downloadedCoreOptions}
-                    value={coreId}
-                    onChange={setCoreId}
-                    placeholder={downloadedCoreOptions.length ? '请选择已下载版本' : '暂无已下载版本'}
-                    disabled={downloadedCoreOptions.length === 0}
-                    size="sm"
-                    className="w-full"
-                  />
-                  <p className="mt-1 text-[11px] text-[#8F959E]">仅展示“FRP 核心管理”中已下载或已导入的版本。</p>
-                </div>
-              )}
+              <div className="sm:col-span-4">
+                <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
+                  FRP 核心版本 <span className="text-[#F53F3F]">*</span>
+                </label>
+                <FeishuSelect
+                  options={downloadedCoreOptions}
+                  value={coreId}
+                  onChange={setCoreId}
+                  placeholder={downloadedCoreOptions.length ? '请选择已下载版本' : '暂无已下载版本'}
+                  disabled={downloadedCoreOptions.length === 0}
+                  size="sm"
+                  className="w-full"
+                />
+              </div>
             </div>
 
-            {/* 分割线 */}
-            <div className="border-t border-[#EFF0F1]" />
-
-            {/* 模块 2: 服务器连接设置 (FRPC) */}
+            {/* 模块 2: 服务器连接与凭据 (FRPC) */}
             {profileType === 'frpc' ? (
-              <div className="space-y-3">
+              <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <div className="text-[13px] font-semibold text-[#1F2329]">
                     FRP 服务器连接
@@ -669,7 +689,7 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                       variant="outline"
                       onClick={handleTestConnectivity}
                       disabled={isTestingConn}
-                      className="h-6 px-2 text-[11px] rounded-[4px] border-[#DEE0E3] bg-white text-[#165DFF] hover:bg-[#F0F4FF] hover:border-[#165DFF]"
+                      className="h-6 px-2 text-[11px] rounded-[4px] border-[#DEE0E3] bg-white text-[#165DFF] hover:bg-[#F0F4FF] hover:border-[#165DFF] cursor-pointer"
                     >
                       <Zap className={`w-3 h-3 mr-1 ${isTestingConn ? 'animate-spin' : ''}`} />
                       {isTestingConn ? '正在测试...' : '⚡ 测试连通性'}
@@ -678,7 +698,7 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-                  <div className="sm:col-span-6">
+                  <div className="sm:col-span-5">
                     <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
                       服务器 IP / 域名 <span className="text-[#F53F3F]">*</span>
                     </label>
@@ -690,7 +710,7 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                     />
                   </div>
 
-                  <div className="sm:col-span-3">
+                  <div className="sm:col-span-2">
                     <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
                       端口 <span className="text-[#F53F3F]">*</span>
                     </label>
@@ -703,41 +723,41 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                     />
                   </div>
 
-                  <div className="sm:col-span-3">
+                  <div className="sm:col-span-5">
                     <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
                       认证令牌 (Token)
                     </label>
-                    <div className="relative">
-                      <FeishuInput
-                        type={showAuthToken ? 'text' : 'password'}
-                        value={authToken}
-                        onChange={(val) => setAuthToken(val)}
-                        placeholder="认证密钥"
-                        containerClassName="h-8 pr-7"
-                        suffix={
-                          <button
-                            type="button"
-                            onClick={() => setShowAuthToken(!showAuthToken)}
-                            className="text-[#8F959E] hover:text-[#1F2329] cursor-pointer"
-                          >
-                            {showAuthToken ? <HideIcon className="w-3.5 h-3.5" /> : <ShowIcon className="w-3.5 h-3.5" />}
-                          </button>
-                        }
-                      />
-                    </div>
+                    <FeishuInput
+                      type={showAuthToken ? 'text' : 'password'}
+                      value={authToken}
+                      onChange={(val) => setAuthToken(val)}
+                      placeholder="认证密钥"
+                      containerClassName="h-8"
+                      suffix={
+                        <button
+                          type="button"
+                          onClick={() => setShowAuthToken(!showAuthToken)}
+                          className="text-[#8F959E] hover:text-[#1F2329] cursor-pointer flex items-center justify-center"
+                          title={showAuthToken ? '隐藏密码' : '显示密码'}
+                          aria-label={showAuthToken ? '隐藏密码' : '显示密码'}
+                        >
+                          {showAuthToken ? <VisibleIcon className="w-4 h-4" /> : <VisibleLockIcon className="w-4 h-4" />}
+                        </button>
+                      }
+                    />
                   </div>
                 </div>
               </div>
             ) : (
               /* 服务端 FRPS 设置 */
-              <div className="space-y-3">
+              <div className="space-y-2.5">
                 <div className="text-[13px] font-semibold text-[#1F2329]">
-                  FRPS 服务端监听配置
+                  FRPS 服务端监听与管理配置
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
-                      监听端口 <span className="text-[#F53F3F]">*</span>
+                      监听端口 (BindPort) <span className="text-[#F53F3F]">*</span>
                     </label>
                     <FeishuInput
                       type="number"
@@ -769,13 +789,92 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                     />
                   </div>
                 </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
+                      认证令牌 (Token)
+                    </label>
+                    <FeishuInput
+                      type={showAuthToken ? 'text' : 'password'}
+                      value={authToken}
+                      onChange={(val) => setAuthToken(val)}
+                      placeholder="留空即无需认证"
+                      containerClassName="h-8"
+                      suffix={
+                        <button
+                          type="button"
+                          onClick={() => setShowAuthToken(!showAuthToken)}
+                          className="text-[#8F959E] hover:text-[#1F2329] cursor-pointer flex items-center justify-center"
+                          title={showAuthToken ? '隐藏密码' : '显示密码'}
+                          aria-label={showAuthToken ? '隐藏密码' : '显示密码'}
+                        >
+                          {showAuthToken ? <VisibleIcon className="w-4 h-4" /> : <VisibleLockIcon className="w-4 h-4" />}
+                        </button>
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
+                      Dashboard 端口
+                    </label>
+                    <FeishuInput
+                      type="number"
+                      value={String(frpsDashboardPort)}
+                      onChange={(val) => setFrpsDashboardPort(Number(val) || 0)}
+                      containerClassName="h-8"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
+                      Dashboard 账号 / 密码
+                    </label>
+                    <div className="flex gap-1.5">
+                      <FeishuInput
+                        value={frpsDashboardUser}
+                        onChange={(val) => setFrpsDashboardUser(val)}
+                        placeholder="admin"
+                        containerClassName="h-8 flex-1"
+                      />
+                      <FeishuInput
+                        type="password"
+                        value={frpsDashboardPwd}
+                        onChange={(val) => setFrpsDashboardPwd(val)}
+                        placeholder="密码"
+                        containerClassName="h-8 flex-1"
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
+
+            {/* 模块 3: 辅助说明与标签 (第 3 行紧凑栅格) */}
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+              <div className="sm:col-span-7">
+                <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
+                  方案描述说明 (选填)
+                </label>
+                <FeishuInput
+                  value={profileDescription}
+                  onChange={(val) => setProfileDescription(val)}
+                  placeholder="描述该方案的用途、穿透目标或网络环境..."
+                  containerClassName="h-8"
+                />
+              </div>
+
+              <div className="sm:col-span-5">
+                <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
+                  方案标签
+                </label>
+                <ProfileTagEditor tags={tags} onChange={setTags} />
+              </div>
+            </div>
 
             {/* 分割线 */}
             <div className="border-t border-[#EFF0F1]" />
 
-            {/* 模块 3: 穿透规则列表 (FRPC 飞书表格化展示) */}
+            {/* 模块 4: 穿透规则列表 (FRPC 核心黄金区) */}
             {profileType === 'frpc' && (
               <div className="space-y-2.5">
                 <div className="flex items-center justify-between">
@@ -795,7 +894,7 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                         size="sm"
                         variant="outline"
                         onClick={() => setIsPresetDropdownOpen(!isPresetDropdownOpen)}
-                        className="h-7 px-2.5 text-[12px] rounded-[6px] border-[#DEE0E3] bg-white text-[#1F2329] hover:bg-[#F2F3F5] gap-1"
+                        className="h-7 px-2.5 text-[12px] rounded-[6px] border-[#DEE0E3] bg-white text-[#1F2329] hover:bg-[#F2F3F5] gap-1 cursor-pointer"
                       >
                         <span>快速预设</span>
                         <ChevronDown className="w-3 h-3 text-[#8F959E]" />
@@ -822,7 +921,7 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                       size="sm"
                       variant="outline"
                       onClick={handleAddEmptyProxy}
-                      className="h-7 px-2.5 text-[12px] rounded-[6px] border-[#DEE0E3] bg-white text-[#165DFF] hover:bg-[#F0F4FF] hover:border-[#165DFF]"
+                      className="h-7 px-2.5 text-[12px] rounded-[6px] border-[#DEE0E3] bg-white text-[#165DFF] hover:bg-[#F0F4FF] hover:border-[#165DFF] cursor-pointer"
                     >
                       <AddIcon className="w-3 h-3 mr-1" />
                       添加规则
@@ -836,15 +935,15 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                   </div>
                 ) : (
                   <div className="border border-[#DEE0E3] rounded-[8px] overflow-hidden bg-white shadow-2xs">
-                    <table className="w-full text-left text-[12px] border-collapse">
+                    <table className="table-fixed w-full text-left text-[12px] border-collapse">
                       <thead>
                         <tr className="bg-[#F8F9FA] border-b border-[#DEE0E3] text-[#646A75] font-medium h-8">
-                          <th className="px-3 py-1 font-medium w-[140px]">规则名称</th>
-                          <th className="px-2 py-1 font-medium w-[90px]">协议</th>
-                          <th className="px-2 py-1 font-medium w-[90px]">本地端口</th>
-                          <th className="px-2 py-1 font-medium">公网端口 / 域名</th>
-                          <th className="px-2 py-1 font-medium w-[110px]">加密 / 压缩</th>
-                          <th className="px-2 py-1 font-medium w-[36px] text-right"></th>
+                          <th className="px-2.5 py-1 font-medium w-[135px]">规则名称</th>
+                          <th className="px-1.5 py-1 font-medium w-[96px]">协议</th>
+                          <th className="px-1.5 py-1 font-medium w-[96px]">本地端口</th>
+                          <th className="px-2 py-1 font-medium w-[185px]">公网端口 / 域名</th>
+                          <th className="px-2 py-1 font-medium w-[118px]">加密 / 压缩</th>
+                          <th className="px-1 py-1 font-medium w-[44px] text-center text-[#646A75]">操作</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#EFF0F1]">
@@ -858,15 +957,16 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                                 containerClassName="h-7 text-[12px]"
                               />
                             </td>
-                            <td className="px-2 py-1">
+                            <td className="px-1.5 py-1">
                               <FeishuSelect
                                 options={proxyTypeOptions}
                                 value={proxy.type}
                                 onChange={(val) => handleUpdateProxy(idx, 'type', val)}
                                 size="sm"
+                                className="w-full"
                               />
                             </td>
-                            <td className="px-2 py-1">
+                            <td className="px-1.5 py-1">
                               <FeishuInput
                                 type="number"
                                 value={proxy.localPort ? String(proxy.localPort) : ''}
@@ -900,7 +1000,7 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                                     type="checkbox"
                                     checked={proxy.useEncryption ?? false}
                                     onChange={(e) => handleUpdateProxy(idx, 'useEncryption', e.target.checked)}
-                                    className="w-3 h-3 rounded text-[#165DFF] focus:ring-0"
+                                    className="w-3.5 h-3.5 rounded text-[#165DFF] focus:ring-0 cursor-pointer"
                                   />
                                   <span>加密</span>
                                 </label>
@@ -909,20 +1009,21 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                                     type="checkbox"
                                     checked={proxy.useCompression ?? false}
                                     onChange={(e) => handleUpdateProxy(idx, 'useCompression', e.target.checked)}
-                                    className="w-3 h-3 rounded text-[#165DFF] focus:ring-0"
+                                    className="w-3.5 h-3.5 rounded text-[#165DFF] focus:ring-0 cursor-pointer"
                                   />
                                   <span>压缩</span>
                                 </label>
                               </div>
                             </td>
-                            <td className="px-2 py-1 text-right">
+                            <td className="px-1 py-1 text-center">
                               <button
                                 type="button"
                                 onClick={() => handleDeleteProxy(idx)}
                                 title="删除该规则"
-                                className="w-6 h-6 rounded-[4px] hover:bg-[#FFF2F0] text-[#8F959E] hover:text-[#F53F3F] inline-flex items-center justify-center transition-colors cursor-pointer"
+                                aria-label="删除该规则"
+                                className="w-7 h-7 rounded-[4px] hover:bg-[#FFF2F0] text-[#8F959E] hover:text-[#F53F3F] inline-flex items-center justify-center transition-colors cursor-pointer"
                               >
-                                <DeleteIcon className="w-3.5 h-3.5" />
+                                <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </td>
                           </tr>
@@ -934,69 +1035,68 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
               </div>
             )}
 
-            {/* 模块 4: 高级传输与加密选项 (FRPC) */}
-            {profileType === 'frpc' && (
-              <>
-                <div className="border-t border-[#EFF0F1]" />
-                <div className="space-y-2.5 pb-1">
-                  <div className="text-[13px] font-semibold text-[#1F2329]">
-                    高级传输与加密
-                  </div>
+            {/* 模块 5: 高级传输与运行日志折叠面板 (单行紧凑收纳区) */}
+            <div className="border border-[#EFF0F1] rounded-[8px] bg-[#FAFAFA] overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setIsAdvancedExpanded(!isAdvancedExpanded)}
+                className="w-full px-3 py-2 flex items-center justify-between text-left hover:bg-[#F2F3F5] transition-colors cursor-pointer select-none"
+              >
+                <span className="text-[12px] font-medium text-[#1F2329] flex items-center gap-1.5">
+                  <ChevronDown className={`w-3.5 h-3.5 text-[#8F959E] transition-transform duration-200 ${isAdvancedExpanded ? 'rotate-180' : ''}`} />
+                  高级传输与运行日志
+                </span>
+                <span className="text-[11px] text-[#8F959E]">
+                  {profileType === 'frpc' ? `协议: ${protocol.toUpperCase()} · TLS: ${tlsEnable ? '开启' : '关闭'} · ` : ''}日志: {(logConfig.level || 'info').toUpperCase()}
+                </span>
+              </button>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
-                    <div>
-                      <label className="block text-[12px] font-medium text-[#1F2329] mb-1">
-                        通信协议
-                      </label>
+              {isAdvancedExpanded && (
+                <div className="px-3.5 py-2.5 bg-white border-t border-[#EFF0F1]">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    {profileType === 'frpc' && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-[12px] font-medium text-[#1F2329] shrink-0">通信协议</span>
+                        <FeishuSelect
+                          options={protocolOptions}
+                          value={protocol}
+                          onChange={(val) => setProtocol(val as any)}
+                          size="sm"
+                          className="w-[170px]"
+                        />
+                      </div>
+                    )}
+
+                    <div data-testid="runtime-log-level-setting" className="flex items-center gap-2">
+                      <span className="text-[12px] font-medium text-[#1F2329] shrink-0">日志级别</span>
                       <FeishuSelect
-                        options={protocolOptions}
-                        value={protocol}
-                        onChange={(val) => setProtocol(val as any)}
+                        options={LOG_LEVEL_OPTIONS}
+                        value={logConfig.level || 'info'}
+                        onChange={(value) => {
+                          setLogConfig((prev) => ({ ...prev, level: value as FrpLogLevel }));
+                        }}
                         size="sm"
-                        className="w-full"
+                        className="w-[130px]"
                       />
                     </div>
 
-                    <div className="pt-4">
-                      <label className="flex items-center gap-2 cursor-pointer select-none">
+                    {profileType === 'frpc' && (
+                      <label className="flex items-center gap-1.5 cursor-pointer select-none text-[12px] font-medium text-[#1F2329] hover:text-[#165DFF] transition-colors">
                         <input
                           type="checkbox"
                           checked={tlsEnable}
                           onChange={(e) => setTlsEnable(e.target.checked)}
-                          className="w-3.5 h-3.5 rounded text-[#165DFF] focus:ring-0"
+                          className="w-3.5 h-3.5 rounded text-[#165DFF] focus:ring-0 cursor-pointer"
                         />
-                        <span className="text-[12px] font-medium text-[#1F2329] flex items-center gap-1">
+                        <span className="flex items-center gap-1">
                           <ShieldIcon className="w-3.5 h-3.5 text-[#00B42A]" />
                           启用 TLS 全链路加密传输
                         </span>
                       </label>
-                    </div>
+                    )}
                   </div>
                 </div>
-              </>
-            )}
-
-            {/* 分割线 */}
-            <div className="border-t border-[#EFF0F1]" />
-
-            {/* 模块 5: 运行日志 */}
-            <div data-testid="runtime-log-level-setting" className="space-y-2.5">
-              <div className="text-[13px] font-semibold text-[#1F2329]">运行日志</div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
-                <div>
-                  <label className="block text-[12px] font-medium text-[#1F2329] mb-1">日志级别</label>
-                  <FeishuSelect
-                    options={LOG_LEVEL_OPTIONS}
-                    value={logConfig.level || 'info'}
-                    onChange={(value) => {
-                      setLogConfig((prev) => ({ ...prev, level: value as FrpLogLevel }));
-                    }}
-                    size="sm"
-                    className="w-full"
-                  />
-                </div>
-              </div>
-              <p className="text-[12px] leading-5 text-[#646A75]">{LOG_LEVEL_HELPERS[logConfig.level || 'info']}</p>
+              )}
             </div>
           </>
         ) : (

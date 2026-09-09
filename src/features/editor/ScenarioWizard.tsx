@@ -9,10 +9,11 @@ import { WIZARD_SCENARIOS, WizardScenario } from '../../services/presets';
 import { testServerConnectivity } from '../../services/ipc';
 import { Button } from '../../components/ui/button';
 import { FeishuSelect } from '../../components/ui/feishu-select';
-import { 
-  Monitor, Terminal, Globe, HardDrive, Gamepad2, Sliders, 
-  Eye, EyeOff, ChevronRight, AlertCircle, ArrowLeft 
+import {
+  Monitor, Terminal, Globe, HardDrive, Gamepad2, Sliders,
+  ChevronRight, AlertCircle, ArrowLeft
 } from 'lucide-react';
+import { VisibleLockIcon, VisibleIcon } from '../../components/icons';
 import { feishuToast } from '../../components/ui/FeishuToast';
 import { ProfileTagEditor } from '../profiles/ProfileTagEditor';
 
@@ -354,7 +355,7 @@ export const ScenarioWizard: React.FC<ScenarioWizardProps> = ({
               onClick={() => setShowPassword(!showPassword)}
               className="absolute right-2 top-2 text-gray-500 hover:text-gray-700"
             >
-              {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              {showPassword ? <VisibleIcon className="w-4 h-4" /> : <VisibleLockIcon className="w-4 h-4" />}
             </button>
           </div>
         </div>
