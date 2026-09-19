@@ -16,7 +16,7 @@ export const DropdownMenuSubTrigger = React.forwardRef<
   <DropdownMenuPrimitive.SubTrigger
     ref={ref}
     className={cn(
-      "relative flex cursor-pointer select-none items-center justify-between rounded-[6px] px-3 py-2 h-10 text-[14px] leading-[22px] text-[#1F2329] outline-none transition-colors hover:bg-[rgba(31,35,41,0.06)] focus:bg-[rgba(31,35,41,0.06)] data-[state=open]:bg-[rgba(31,35,41,0.08)] data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      "relative flex cursor-pointer select-none items-center justify-between rounded-[6px] px-3 py-2 min-h-[36px] text-[14px] leading-[22px] text-[#1F2329] outline-none transition-colors hover:bg-[rgba(31,35,41,0.06)] focus:bg-[rgba(31,35,41,0.06)] data-[state=open]:bg-[rgba(31,35,41,0.08)] data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
       className
     )}
     {...props}
@@ -71,7 +71,7 @@ export const DropdownMenuItem = React.forwardRef<
   <DropdownMenuPrimitive.Item
     ref={ref}
     className={cn(
-      "relative flex cursor-pointer select-none items-center justify-between rounded-[6px] px-3 py-2 h-10 text-[14px] leading-[22px] text-[#1F2329] outline-none transition-colors hover:bg-[rgba(31,35,41,0.06)] focus:bg-[rgba(31,35,41,0.06)] data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      "relative flex cursor-pointer select-none items-center justify-between rounded-[6px] px-3 py-2 min-h-[36px] text-[14px] leading-[22px] text-[#1F2329] outline-none transition-colors hover:bg-[rgba(31,35,41,0.06)] focus:bg-[rgba(31,35,41,0.06)] data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
       className
     )}
     {...props}

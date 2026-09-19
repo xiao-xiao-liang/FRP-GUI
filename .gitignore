@@ -44,3 +44,6 @@ Thumbs.db
 
 # Tooling temporary files
 .superpowers/
+
+# Portable app local data directory
+data/

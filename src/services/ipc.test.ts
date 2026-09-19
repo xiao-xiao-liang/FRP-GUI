@@ -24,6 +24,9 @@ import {
   _resetRuntimeEventBridgeForTest,
   sanitizeRuntimeText,
   fetchGitHubReleases,
+  sanitizeFileStem,
+  computeCoreTomlPath,
+  saveProfileTomlToCore,
 } from './ipc';
 import { FrpCore, Profile } from '../types/frp';
 
@@ -311,6 +314,7 @@ describe('IPC Runtime Contract and Event Bridge', () => {
     expect(startRes).toEqual({ accepted: true, pid: 4321 });
     expect(mockInvoke).toHaveBeenCalledWith('start_profile', {
       profileId: 'profile_1',
+      profileName: '测试连接',
       profileType: 'frpc',
       tomlContent: mockProfile.rawToml,
       corePath: mockCore.path,
@@ -320,6 +324,96 @@ describe('IPC Runtime Contract and Event Bridge', () => {
     expect(stopRes).toEqual({ accepted: true });
     expect(mockInvoke).toHaveBeenCalledWith('stop_profile', {
       profileId: 'profile_1',
+    });
+  });
+
+  it('当 rawToml 为空时从凭据库恢复配置或从 config 序列化兜底', async () => {
+    vi.mocked(isTauriEnv).mockReturnValue(true);
+    (window as any).__MOCK_TAURI_ENV__ = true;
+    const mockInvoke = vi.fn().mockImplementation((cmd: string, args: any) => {
+      if (cmd === 'load_profile_secret' && args?.reference === 'frp-gui/profile/profile_empty_raw') {
+        return Promise.resolve(JSON.stringify({
+          rawToml: 'serverAddr = "from-vault.example.com"\nserverPort = 7000\n',
+          config: {},
+        }));
+      }
+      if (cmd === 'start_profile') {
+        return Promise.resolve({ accepted: true, pid: 9999 });
+      }
+      return Promise.resolve(null);
+    });
+
+    (window as any).__TAURI__ = {
+      core: { invoke: mockInvoke },
+    };
+
+    const emptyRawProfile: Profile = {
+      ...mockProfile,
+      id: 'profile_empty_raw',
+      rawToml: '',
+    };
+
+    const res = await startProfileInstance(emptyRawProfile, mockCore);
+    expect(res.accepted).toBe(true);
+    expect(mockInvoke).toHaveBeenCalledWith('start_profile', expect.objectContaining({
+      profileId: 'profile_empty_raw',
+      tomlContent: 'serverAddr = "from-vault.example.com"\nserverPort = 7000\n',
+    }));
+  });
+
+  it('当 rawToml、凭据库和 config 均无法获得有效内容时拒绝启动且不调用后端', async () => {
+    vi.mocked(isTauriEnv).mockReturnValue(true);
+    (window as any).__MOCK_TAURI_ENV__ = true;
+    const mockInvoke = vi.fn().mockResolvedValue(null);
+
+    (window as any).__TAURI__ = {
+      core: { invoke: mockInvoke },
+    };
+
+    const completelyEmptyProfile: Profile = {
+      ...mockProfile,
+      id: 'profile_completely_empty',
+      rawToml: '   \n  ',
+      config: undefined as any,
+    };
+
+    const res = await startProfileInstance(completelyEmptyProfile, mockCore);
+    expect(res.accepted).toBe(false);
+    expect(res.error).toContain('未找到有效 TOML 配置内容');
+    // start_profile 不应被调用
+    expect(mockInvoke).not.toHaveBeenCalledWith('start_profile', expect.anything());
+  });
+
+  it('正确清理非法字符并推导核心安装目录下的 TOML 路径', () => {
+    expect(sanitizeFileStem('公网服务器穿透 (118.195.146.161)')).toBe('公网服务器穿透 (118.195.146.161)');
+    expect(sanitizeFileStem('a/b\\c:d*e?f"g<h>i|j')).toBe('a_b_c_d_e_f_g_h_i_j');
+    expect(sanitizeFileStem('   ...   ')).toBe('profile');
+    expect(sanitizeFileStem('')).toBe('profile');
+
+    expect(computeCoreTomlPath('D:\\dev\\frp_0.71.0\\frpc.exe', '公网穿透')).toBe(
+      'D:\\dev\\frp_0.71.0\\frpc_公网穿透.toml'
+    );
+    expect(computeCoreTomlPath('/opt/frp/frpc', 'my-ssh')).toBe('/opt/frp/frpc_my-ssh.toml');
+    expect(computeCoreTomlPath('', 'test')).toBe('');
+  });
+
+  it('桌面端保存 TOML 到核心目录调用 save_profile_toml_to_core', async () => {
+    vi.mocked(isTauriEnv).mockReturnValue(true);
+    (window as any).__MOCK_TAURI_ENV__ = true;
+    const mockInvoke = vi.fn().mockResolvedValue('D:\\dev\\frp\\frpc_my_test.toml');
+    (window as any).__TAURI__ = { core: { invoke: mockInvoke } };
+
+    const res = await saveProfileTomlToCore(
+      'D:\\dev\\frp\\frpc.exe',
+      'my/test',
+      'serverAddr = "1.2.3.4"\n'
+    );
+
+    expect(res).toBe('D:\\dev\\frp\\frpc_my_test.toml');
+    expect(mockInvoke).toHaveBeenCalledWith('save_profile_toml_to_core', {
+      corePath: 'D:\\dev\\frp\\frpc.exe',
+      profileName: 'my/test',
+      tomlContent: 'serverAddr = "1.2.3.4"\n',
     });
   });
 

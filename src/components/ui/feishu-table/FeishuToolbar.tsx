@@ -67,7 +67,7 @@ const FeishuSortIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
-const FeishuSearchIcon = ({ className }: { className?: string }) => (
+export const FeishuSearchIcon = ({ className }: { className?: string }) => (
   <svg
     width="16"
     height="16"
@@ -85,7 +85,7 @@ const FeishuSearchIcon = ({ className }: { className?: string }) => (
 );
 
 // 1:1 飞书官方高级搜索/匹配选项图标 (AdvancedActivedOutlined - 放大一号至 16px)
-const FeishuAdvancedActivedIcon = ({ className }: { className?: string }) => (
+export const FeishuAdvancedActivedIcon = ({ className }: { className?: string }) => (
   <svg
     width="16"
     height="16"
@@ -107,6 +107,7 @@ const FEISHU_FONT_FAMILY =
 
 export interface FeishuToolbarProps {
   title?: string;
+  titleRight?: React.ReactNode;
   totalCount?: number;
   selectedCount?: number;
   matchedCount?: number;
@@ -131,6 +132,7 @@ export interface FeishuToolbarProps {
 
 export const FeishuToolbar: React.FC<FeishuToolbarProps> = ({
   title,
+  titleRight,
   totalCount = 0,
   selectedCount = 0,
   matchedCount,
@@ -304,11 +306,22 @@ export const FeishuToolbar: React.FC<FeishuToolbarProps> = ({
       style={{ fontFamily: FEISHU_FONT_FAMILY }}
       className={cn("bg-white select-none px-5 pt-3.5 pb-2.5 relative", className)}
     >
-      {/* 标题 */}
-      {title && (
-        <h2 className="text-[17px] font-medium text-[#1F2329] mb-3">
-          {title}
-        </h2>
+      {/* 标题行 (支持左侧标题与右侧工具如分段切换器两端对齐) */}
+      {(title || titleRight) && (
+        <div className="flex items-center justify-between gap-3 mb-3">
+          {title ? (
+            <h2 className="text-[17px] font-medium text-[#1F2329]">
+              {title}
+            </h2>
+          ) : (
+            <div />
+          )}
+          {titleRight && (
+            <div className="flex items-center">
+              {titleRight}
+            </div>
+          )}
+        </div>
       )}
 
       <div className="flex items-center justify-between gap-3">

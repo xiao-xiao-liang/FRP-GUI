@@ -8,7 +8,7 @@ import { FeishuPill } from '../../components/ui/feishu-table/FeishuPill';
 import { FEISHU_FONT_FAMILY } from '../../components/ui/feishu-table';
 import { PRESET_SCENARIOS } from '../../services/presets';
 import { serializeFrpcToml, parseFrpcToml, serializeFrpsToml, parseFrpsToml } from '../../services/toml-sync';
-import { testServerConnectivity, loadProfileSecret } from '../../services/ipc';
+import { testServerConnectivity, loadProfileSecret, computeCoreTomlPath } from '../../services/ipc';
 import { profileCredentialReference, parseProfileSecret } from '../../services/profile-secrets';
 import { ScenarioWizard } from './ScenarioWizard';
 import { ScenarioFormValues } from '../../services/profile-validator';
@@ -73,6 +73,9 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
   const downloadedCoreOptions = cores
     .filter((core) => Boolean(core.path) && core.status !== 'not_downloaded')
     .map((core) => ({ value: core.id, label: `${core.version} · ${core.os}/${core.arch}` }));
+
+  const selectedCore = cores.find((core) => core.id === coreId) || activeCore;
+  const targetTomlPath = selectedCore?.path ? computeCoreTomlPath(selectedCore.path, profileName || 'profile') : '';
   
   // FRPC 配置状态
   const [serverAddr, setServerAddr] = useState('118.195.146.161');
@@ -1103,15 +1106,25 @@ export const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
           /* TOML 源码编辑模式 */
           <div className="h-[420px] flex flex-col space-y-2.5">
             <div className="flex items-center justify-between shrink-0">
-              <span className="text-[13px] font-semibold text-[#1F2329]">
-                FRP 标准 TOML 配置文件
-              </span>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-[13px] font-semibold text-[#1F2329] shrink-0">
+                  FRP 标准 TOML 配置文件
+                </span>
+                {profileType === 'frpc' && targetTomlPath && (
+                  <span
+                    className="text-[11px] text-[#646A75] font-mono truncate max-w-[380px] bg-[#F2F3F5] px-2 py-0.5 rounded border border-[#DEE0E3]"
+                    title={`保存或启动时将写入所选核心目录：${targetTomlPath} (并同步 frpc.toml)`}
+                  >
+                    写入路径: {targetTomlPath}
+                  </span>
+                )}
+              </div>
 
               <Button
                 size="sm"
                 variant="outline"
                 onClick={syncTomlToForm}
-                className="h-7 text-[12px] px-2.5 rounded-[6px] border-[#DEE0E3] bg-white text-[#165DFF] hover:bg-[#F0F4FF] hover:border-[#165DFF]"
+                className="h-7 text-[12px] px-2.5 rounded-[6px] border-[#DEE0E3] bg-white text-[#165DFF] hover:bg-[#F0F4FF] hover:border-[#165DFF] shrink-0 cursor-pointer"
               >
                 <RefreshIcon className="w-3 h-3 mr-1" />
                 同步到表单

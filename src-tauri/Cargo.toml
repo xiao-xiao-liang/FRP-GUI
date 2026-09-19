@@ -36,6 +36,7 @@ base64 = "0.22"
 regex = "1.13.1"
 uuid = { version = "1", features = ["v4"] }
 rfd = "0.15"
+aes-gcm = "0.10"
 
 [profile.release]
 opt-level = "z"

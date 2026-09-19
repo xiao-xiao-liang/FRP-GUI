@@ -13,4 +13,10 @@ describe('全局数字输入框样式', () => {
     expect(css).toContain('input[type="number"]::-webkit-outer-spin-button');
     expect(css).toContain('-webkit-appearance: none');
   });
+
+  it('隐藏 Windows Edge/WebView2 原生密码查看与输入框清空按钮，防止与自定义组件冲突', () => {
+    expect(css).toContain('input::-ms-reveal');
+    expect(css).toContain('input::-ms-clear');
+    expect(css).toContain('display: none !important');
+  });
 });

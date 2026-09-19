@@ -14,6 +14,7 @@ import {
   listCoreDownloadTasks,
   subscribeCoreDownloadProgress,
   scanLocalFrpcCores,
+  getDefaultCoresDir,
   HostPlatformInfo,
   MatchedAssetResult,
 } from '../../services/ipc';
@@ -42,7 +43,6 @@ import { CoreAvailability, deriveCoreReleaseRows } from './core-version-library'
 import { cn } from '../../lib/utils';
 import {
   Folder,
-  RefreshCw,
   ExternalLink,
   ShieldCheck,
   Plus,
@@ -194,12 +194,13 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
     return localStorage.getItem('frp_gui_selected_mirror') || 'ghproxy';
   });
 
-  // 用户上次选择的下载根目录持久化
+  // 用户上次选择的下载根目录持久化（优先使用便携自包含目录）
   const [lastDownloadDir, setLastDownloadDir] = useState<string>(() => {
-    return (
-      localStorage.getItem('frp_gui_last_download_dir') ||
-      'D:\\Development-Kits\\IntranetPenetration'
-    );
+    const cached = localStorage.getItem('frp_gui_last_download_dir');
+    if (cached && cached !== 'D:\\Development-Kits\\IntranetPenetration') {
+      return cached;
+    }
+    return '';
   });
 
   // 当前宿主系统与 CPU 架构自动探测
@@ -264,6 +265,16 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
   useEffect(() => {
     loadReleases();
     initHostPlatform();
+    getDefaultCoresDir().then((defaultDir) => {
+      if (defaultDir) {
+        setLastDownloadDir((prev) => {
+          if (!prev || prev === 'D:\\Development-Kits\\IntranetPenetration') {
+            return defaultDir;
+          }
+          return prev;
+        });
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -598,7 +609,7 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
     const isWin = hostPlatform.os === 'windows';
 
     // 智能推导目标目录：优先使用上次记住的目录路径，并在其下建立该版本的专属文件夹
-    const baseDir = lastDownloadDir.replace(/[\\/]+$/, '');
+    const baseDir = (lastDownloadDir || 'data/cores').replace(/[\\/]+$/, '');
     const defaultDir = isWin
       ? `${baseDir}\\frp_${release.tag}_${hostPlatform.os}_${hostPlatform.arch}`
       : `${baseDir}/frp_${release.tag}`;
@@ -922,11 +933,11 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
   ], [activeCoreId, onSelectCore]);
 
   const viewModeSwitcher = (
-    <div className="relative flex items-center bg-[#F2F3F5] p-0.5 rounded-md border border-[#DEE0E3] select-none">
+    <div className="relative flex items-center bg-[#F5F6F7] p-0.5 rounded-[6px] border border-[#E5E6EB] select-none">
       {/* 平滑滑动的白色高亮胶囊 (Sliding Indicator) */}
       <div
         className={cn(
-          "absolute top-0.5 bottom-0.5 w-7 bg-white rounded-[4px] shadow-xs transition-transform duration-200 ease-out pointer-events-none",
+          "absolute top-0.5 bottom-0.5 w-7 bg-white rounded-[5px] shadow-xs transition-transform duration-200 ease-out pointer-events-none",
           viewMode === 'table' ? "translate-x-7" : "translate-x-0"
         )}
       />
@@ -936,8 +947,8 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
         title="卡片视图"
         aria-label="卡片视图"
         className={cn(
-          "relative z-10 w-7 h-6 rounded-sm transition-colors cursor-pointer flex items-center justify-center",
-          viewMode === 'card' ? "text-[#165DFF]" : "text-feishu-text-secondary hover:text-feishu-text-primary"
+          "relative z-10 w-7 h-6 rounded-[5px] transition-colors cursor-pointer flex items-center justify-center",
+          viewMode === 'card' ? "text-[#3370FF]" : "text-[#646A75] hover:text-[#1F2329]"
         )}
       >
         <LayoutGrid className="w-3.5 h-3.5" />
@@ -948,8 +959,8 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
         title="表格视图"
         aria-label="表格视图"
         className={cn(
-          "relative z-10 w-7 h-6 rounded-[4px] transition-colors cursor-pointer flex items-center justify-center",
-          viewMode === 'table' ? "text-[#165DFF]" : "text-[#646A75] hover:text-[#1F2329]"
+          "relative z-10 w-7 h-6 rounded-[5px] transition-colors cursor-pointer flex items-center justify-center",
+          viewMode === 'table' ? "text-[#3370FF]" : "text-[#646A75] hover:text-[#1F2329]"
         )}
       >
         <TableIcon className="w-3.5 h-3.5" />
@@ -980,26 +991,26 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
                   <ChevronDown className="w-3.5 h-3.5 ml-1 opacity-80" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-[260px] p-1.5 shadow-lg border border-feishu-border bg-white rounded-lg">
+              <DropdownMenuContent align="end" className="w-[300px] p-1.5 shadow-lg border border-feishu-border bg-white rounded-lg">
                 <DropdownMenuItem
                   onClick={handleImportArchive}
-                  className="cursor-pointer py-2.5 px-3 rounded-md hover:bg-[#F2F3F5] flex items-start gap-2.5 outline-none"
+                  className="cursor-pointer py-2.5 px-3 rounded-md hover:bg-[#F2F3F5] flex items-start gap-2.5 outline-none h-auto"
                 >
                   <Package className="w-4 h-4 text-feishu-blue mt-0.5 shrink-0" />
-                  <div className="flex flex-col text-left">
-                    <span className="text-[13px] font-medium text-feishu-text-primary">导入官方压缩包 (.zip, .tar.gz)</span>
-                    <span className="text-[11px] text-feishu-text-muted mt-0.5">未解压的官方压缩包，自动解压与验真安装</span>
+                  <div className="flex flex-col text-left min-w-0 flex-1">
+                    <span className="text-[13px] font-medium text-feishu-text-primary leading-snug">导入官方压缩包 (.zip, .tar.gz)</span>
+                    <span className="text-[11px] text-feishu-text-muted mt-1 leading-normal break-words">未解压的官方压缩包，自动解压与验真安装</span>
                   </div>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator className="my-1 bg-[#DEE0E3]" />
                 <DropdownMenuItem
                   onClick={handleImportLocalDirectory}
-                  className="cursor-pointer py-2.5 px-3 rounded-md hover:bg-[#F2F3F5] flex items-start gap-2.5 outline-none"
+                  className="cursor-pointer py-2.5 px-3 rounded-md hover:bg-[#F2F3F5] flex items-start gap-2.5 outline-none h-auto"
                 >
                   <FolderOpen className="w-4 h-4 text-feishu-text-muted mt-0.5 shrink-0" />
-                  <div className="flex flex-col text-left">
-                    <span className="text-[13px] font-medium text-feishu-text-primary">选择本地已解压目录</span>
-                    <span className="text-[11px] text-feishu-text-muted mt-0.5">扫描已有解压目录，支持多版本批量识别</span>
+                  <div className="flex flex-col text-left min-w-0 flex-1">
+                    <span className="text-[13px] font-medium text-feishu-text-primary leading-snug">选择本地已解压目录</span>
+                    <span className="text-[11px] text-feishu-text-muted mt-1 leading-normal break-words">扫描已有解压目录，支持多版本批量识别</span>
                   </div>
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -1023,6 +1034,7 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
       {/* 2. 核心引擎展示区（统一外层容器与工具栏，支持表格视图与卡片视图平滑切换） */}
       <FeishuDataTable
         title="FRP 核心引擎管理列表"
+        titleRight={viewModeSwitcher}
         columns={columns}
         data={filteredData}
         rowKey="id"
@@ -1066,22 +1078,6 @@ export const CoreManagerPage: React.FC<CoreManagerPageProps> = ({
             </div>
           );
         }}
-        customRightTools={
-          <div className="flex items-center gap-2">
-            {viewModeSwitcher}
-
-            <Button
-              size="iconSm"
-              variant="ghost"
-              onClick={loadReleases}
-              disabled={loadingReleases}
-              title="刷新 GitHub Releases 版本库"
-              className="w-8 h-8 rounded-md"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 text-feishu-text-secondary ${loadingReleases ? 'animate-spin' : ''}`} />
-            </Button>
-          </div>
-        }
       />
 
       {/* 3. 弹窗：更改/编辑已配置的 FRP 核心 */}

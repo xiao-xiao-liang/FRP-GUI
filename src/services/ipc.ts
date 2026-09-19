@@ -21,6 +21,8 @@ import {
 } from '../types/frp';
 import { generateId } from '../lib/utils';
 import type { AppSettings } from './app-settings';
+import { profileCredentialReference, parseProfileSecret } from './profile-secrets';
+import { serializeFrpcToml, serializeFrpsToml } from './toml-sync';
 
 // 检测是否处于 Tauri 宿主环境
 export const isTauriEnv = (): boolean => {
@@ -321,6 +323,43 @@ export async function startProfileInstance(
 ): Promise<ProcessCommandResult> {
   if (isTauriEnv()) {
     try {
+      let tomlContent = profile.rawToml?.trim() ? profile.rawToml : '';
+
+      // 1. 若内存中 rawToml 为空，尝试从桌面凭据库恢复完整机密
+      if (!tomlContent) {
+        try {
+          const stored = await loadProfileSecret(profileCredentialReference(profile.id));
+          if (stored) {
+            const secret = parseProfileSecret(stored);
+            if (secret?.rawToml?.trim()) {
+              tomlContent = secret.rawToml;
+            }
+          }
+        } catch (err) {
+          console.warn(`[startProfileInstance] 从凭据库恢复方案 ${profile.id} 失败:`, err);
+        }
+      }
+
+      // 2. 若仍为空但存在结构化 config 对象，由序列化器生成兜底 TOML
+      if (!tomlContent?.trim() && profile.config) {
+        try {
+          tomlContent = profile.type === 'frps'
+            ? serializeFrpsToml(profile.config as any)
+            : serializeFrpcToml(profile.config as any);
+        } catch (err) {
+          console.warn(`[startProfileInstance] 序列化方案 ${profile.id} 配置失败:`, err);
+        }
+      }
+
+      // 3. 严格校验：若依然为空，拒绝启动并阻止调用原生 IPC，防止覆写核心目录为 0 字节文件
+      if (!tomlContent?.trim()) {
+        return {
+          accepted: false,
+          error: '启动失败：未找到有效 TOML 配置内容，请在“编辑配置”中检查并保存',
+          failureKind: 'startup',
+        };
+      }
+
       const res = await tauriInvoke<{
         accepted?: boolean;
         success?: boolean;
@@ -329,8 +368,9 @@ export async function startProfileInstance(
         failureKind?: string;
       }>('start_profile', {
         profileId: profile.id,
+        profileName: profile.name,
         profileType: profile.type,
-        tomlContent: profile.rawToml,
+        tomlContent,
         corePath: core?.path || '',
         ...(serverCredentialRef ? { serverCredentialRef } : {}),
       });
@@ -363,6 +403,55 @@ export async function startProfileInstance(
     accepted: false,
     error: 'FRPC 运行功能仅可在桌面版应用中使用',
   };
+}
+
+/**
+ * 清理文件名中的非法字符，生成安全的 TOML 文件主名
+ */
+export function sanitizeFileStem(name: string): string {
+  const sanitized = name.replace(/[/\\:*?"<>|\x00-\x1f]/g, '_').trim().replace(/^\.+|\.+$/g, '');
+  return sanitized || 'profile';
+}
+
+/**
+ * 根据核心可执行程序路径与连接方案名称，推导核心安装目录下的独立 TOML 配置文件路径
+ */
+export function computeCoreTomlPath(coreExecutablePath: string, profileName: string): string {
+  if (!coreExecutablePath) return '';
+  const lastSep = Math.max(coreExecutablePath.lastIndexOf('/'), coreExecutablePath.lastIndexOf('\\'));
+  if (lastSep < 0) return '';
+  const dir = coreExecutablePath.substring(0, lastSep);
+  const sep = coreExecutablePath.includes('\\') ? '\\' : '/';
+  const safeStem = sanitizeFileStem(profileName);
+  return `${dir}${sep}frpc_${safeStem}.toml`;
+}
+
+/**
+ * 将连接配置保存到所选 FRP 核心可执行程序的同级目录下
+ * @returns 写入的实际绝对路径，若在非 Tauri 环境或参数不全则返回 null
+ */
+export async function saveProfileTomlToCore(
+  corePath?: string,
+  profileName?: string,
+  tomlContent?: string,
+): Promise<string | null> {
+  if (!corePath || !profileName || !tomlContent) {
+    return null;
+  }
+  if (isTauriEnv()) {
+    try {
+      const writtenPath = await tauriInvoke<string>('save_profile_toml_to_core', {
+        corePath,
+        profileName,
+        tomlContent,
+      });
+      return writtenPath;
+    } catch (err) {
+      console.warn('保存 TOML 配置文件到 FRP 核心目录失败:', err);
+      return null;
+    }
+  }
+  return null;
 }
 
 /**
@@ -1166,6 +1255,21 @@ export async function runFrpsOperation(params: RunFrpsOperationParams): Promise<
   };
 
   return tauriInvoke<ServerOperationResult>('run_frps_operation', { request: safeRequest });
+}
+
+/**
+ * 获取便携自包含默认核心存储目录
+ */
+export async function getDefaultCoresDir(): Promise<string> {
+  if (!isTauriEnv()) {
+    return 'data/cores';
+  }
+  try {
+    return await tauriInvoke<string>('get_default_cores_dir');
+  } catch (error) {
+    console.warn('[IPC] 获取默认核心存储目录失败，使用相对路径兜底:', error);
+    return 'data/cores';
+  }
 }
 
 export * from './frp-binary-detector';

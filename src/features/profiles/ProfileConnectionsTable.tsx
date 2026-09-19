@@ -12,7 +12,6 @@ import {
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
 } from '../../components/ui/dropdown-menu';
 import { getBatchActionTargets } from '../../services/profile-organization';
 import { ProxyTypePill } from './proxy-type-presentation';
@@ -23,12 +22,15 @@ import {
   QrCode,
   Copy,
   Wifi,
+  Trash2,
+  Pin,
+  PinOff,
 } from 'lucide-react';
 
 const PROFILE_TABLE_COLUMNS = [
-  { key: 'name', title: '连接名称', width: 280, minWidth: 160, maxWidth: 480 },
-  { key: 'proxies', title: '穿透规则', width: 220, minWidth: 150, maxWidth: 360 },
-  { key: 'startTime', title: '上次启动', width: 160, minWidth: 130, maxWidth: 240 },
+  { key: 'name', title: '连接名称', width: 220, minWidth: 160, maxWidth: 420 },
+  { key: 'proxies', title: '穿透规则', width: 340, minWidth: 200, maxWidth: 540 },
+  { key: 'startTime', title: '上次启动', width: 130, minWidth: 90, maxWidth: 200 },
   { key: 'actions', title: '操作', width: 140, minWidth: 140, maxWidth: 140, resizable: false, fixed: 'right' },
 ] as const;
 
@@ -380,13 +382,26 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                           className="w-full text-left cursor-pointer flex flex-col gap-1 py-1 focus:outline-none group rounded-[4px] p-1 -m-1 hover:bg-[#F2F3F5] transition-colors"
                         >
                           {visibleProxies.map((p: any, idx: number) => {
+                            const localIp = p.localIP || '127.0.0.1';
                             const lPort = p.localPort !== undefined && p.localPort !== null ? p.localPort : '—';
+                            const localDisplay = `${localIp}:${lPort}`;
+
+                            const remoteIp = (record.config as any)?.serverAddr || (record.config as any)?.bindAddr || (p as any).remoteIP || '—';
                             const rPort = p.remotePort !== undefined && p.remotePort !== null ? p.remotePort : '—';
+                            const remoteDisplay = rPort !== '—'
+                              ? `${remoteIp}:${rPort}`
+                              : (p.customDomains?.[0] || (p.subdomain && remoteIp !== '—' ? `${p.subdomain}.${remoteIp}` : `${remoteIp}:—`));
+
+                            const ruleText = `${localDisplay} → ${remoteDisplay}`;
+
                             return (
-                              <div key={idx} className="flex items-center gap-1.5 leading-tight">
+                              <div key={idx} className="flex items-center gap-1.5 leading-tight min-w-0">
                                 <ProxyTypePill type={p.type} />
-                                <span className="font-mono text-[#646A75] tabular-nums text-[11px]">
-                                  {`${lPort} → ${rPort}`}
+                                <span
+                                  title={ruleText}
+                                  className="font-mono text-[#646A75] tabular-nums text-[11px] whitespace-nowrap truncate"
+                                >
+                                  {ruleText}
                                 </span>
                               </div>
                             );
@@ -401,9 +416,12 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                     </td>
 
                     {/* 上次启动 */}
-                    <td className="px-3 py-2 truncate">
-                      {record.stats?.startTime ? (
-                        <span className="text-[12px] text-[#646A75] tabular-nums">
+                    <td className="px-2 py-2 truncate">
+                      {typeof record.stats?.startTime === 'number' && Number.isFinite(record.stats.startTime) && record.stats.startTime > 0 ? (
+                        <span
+                          title={new Date(record.stats.startTime).toLocaleString('zh-CN', { hour12: false })}
+                          className="text-[12px] text-[#646A75] tabular-nums whitespace-nowrap"
+                        >
                           {new Date(record.stats.startTime).toLocaleString('zh-CN', { hour12: false })}
                         </span>
                       ) : (
@@ -412,14 +430,18 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                     </td>
 
                     {/* 操作列 (sticky right-0) */}
-                    <td className="sticky right-0 bg-white group-hover:bg-[#F8F9FA] z-20 pl-3 pr-5 py-2 whitespace-nowrap">
+                    <td className={`sticky right-0 ${
+                      isSelected
+                        ? 'bg-[#F0F4FF] group-hover:bg-[#E8F0FF]'
+                        : 'bg-white group-hover:bg-[#F8F9FA]'
+                    } z-20 pl-3 pr-5 py-2 whitespace-nowrap`}>
                       <div className="flex items-center gap-1.5">
                         {record.status === 'error' && record.stats?.lastFailureKind === 'core_invalid' ? (
                           <Button
                             size="sm"
                             variant="destructive"
                             onClick={onRepairCore}
-                            className="h-7 px-2.5 text-[11px] bg-[#FFF0F0] text-[#F53F3F] hover:bg-[#FFE4E4] border border-[#FFCCC7] cursor-pointer"
+                            className="h-7 px-2.5 text-[11px] bg-[#FFF0F0] text-[#F53F3F] hover:bg-[#FFE4E4] cursor-pointer"
                           >
                             修复 FRPC 核心
                           </Button>
@@ -428,11 +450,11 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                             <span>
                               <Button
                                 size="sm"
-                                variant="outline"
+                                variant="ghost"
                                 aria-label="停止连接"
                                 disabled={isBatchOperating}
                                 onClick={() => onToggle(record)}
-                                className="h-7 w-7 p-0 rounded-[4px] border-[#DEE0E3] bg-white text-[#1F2329] hover:bg-[#F2F3F5] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                                className="h-7 w-7 p-0 rounded-[4px] bg-transparent text-[#1F2329] hover:bg-[#F2F3F5] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 <StopIcon className="w-3.5 h-3.5 shrink-0" />
                               </Button>
@@ -443,10 +465,10 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                             <span>
                               <Button
                                 size="sm"
-                                variant="outline"
+                                variant="ghost"
                                 aria-label="停止中..."
                                 disabled
-                                className="h-7 w-7 p-0 rounded-[4px] border-[#DEE0E3] text-[#8F959E] bg-[#F2F3F5] cursor-not-allowed opacity-50"
+                                className="h-7 w-7 p-0 rounded-[4px] text-[#8F959E] bg-[#F2F3F5] cursor-not-allowed opacity-50"
                               >
                                 <StopIcon className="w-3.5 h-3.5 shrink-0" />
                               </Button>
@@ -457,10 +479,10 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                             <span>
                               <Button
                                 size="sm"
-                                variant="outline"
+                                variant="ghost"
                                 aria-label="启动中..."
                                 disabled
-                                className="h-7 w-7 p-0 rounded-[4px] border-[#DEE0E3] text-[#00B42A] bg-[#F2FCF3] cursor-not-allowed opacity-50"
+                                className="h-7 w-7 p-0 rounded-[4px] text-[#00B42A] bg-[#F2FCF3] cursor-not-allowed opacity-50"
                               >
                                 <RunIcon className="w-3.5 h-3.5 shrink-0" />
                               </Button>
@@ -471,11 +493,11 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                             <span>
                               <Button
                                 size="sm"
-                                variant="outline"
+                                variant="ghost"
                                 aria-label="重新启动连接"
                                 disabled={isBatchOperating}
                                 onClick={() => onToggle(record)}
-                                className="h-7 w-7 p-0 rounded-[4px] border-[#DEE0E3] bg-white text-[#00B42A] hover:bg-[#F2FCF3] hover:border-[#00B42A] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                                className="h-7 w-7 p-0 rounded-[4px] bg-transparent text-[#00B42A] hover:bg-[#F2FCF3] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 <RunIcon className="w-3.5 h-3.5 shrink-0" />
                               </Button>
@@ -486,11 +508,11 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                             <span>
                               <Button
                                 size="sm"
-                                variant="outline"
+                                variant="ghost"
                                 aria-label="启动连接"
                                 disabled={isBatchOperating}
                                 onClick={() => onToggle(record)}
-                                className="h-7 w-7 p-0 rounded-[4px] border-[#DEE0E3] bg-white text-[#00B42A] hover:bg-[#F2FCF3] hover:border-[#00B42A] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                                className="h-7 w-7 p-0 rounded-[4px] bg-transparent text-[#00B42A] hover:bg-[#F2FCF3] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 <RunIcon className="w-3.5 h-3.5 shrink-0" />
                               </Button>
@@ -503,13 +525,13 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                           <span>
                             <Button
                               size="sm"
-                              variant="outline"
+                              variant="ghost"
                               aria-label="删除连接"
                               disabled={isBatchOperating}
                               onClick={() => onDelete(record)}
-                              className="h-7 w-7 p-0 rounded-[4px] border-[#DEE0E3] bg-white text-[#646A75] hover:bg-[#FFECEC] hover:text-[#F53F3F] hover:border-[#F53F3F] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                              className="h-7 w-7 p-0 rounded-[4px] bg-transparent text-[#F53F3F] hover:bg-[#FFECEC] hover:text-[#D93030] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                              <DeleteIcon className="w-3.5 h-3.5 shrink-0" />
+                              <Trash2 className="w-3.5 h-3.5 shrink-0" />
                             </Button>
                           </span>
                         </FeishuTooltip>
@@ -519,45 +541,45 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                           <DropdownMenuTrigger asChild>
                             <Button
                               size="sm"
-                              variant="outline"
+                              variant="ghost"
                               aria-label="更多操作"
                               disabled={isBatchOperating}
-                              className="h-7 w-7 p-0 rounded-[4px] border-[#DEE0E3] bg-white text-[#646A75] hover:bg-[#F2F3F5] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                              className="h-7 w-7 p-0 rounded-[4px] bg-transparent text-[#646A75] hover:bg-[#F2F3F5] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               <MoreHorizontal className="w-3.5 h-3.5" />
                             </Button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="min-w-[130px] p-1 shadow-lg border border-[#DEE0E3] bg-white rounded-[8px]">
-                            <DropdownMenuItem onClick={() => onEdit(record)} className="flex items-center gap-2 px-2.5 py-1.5 text-[12px] text-[#1F2329] hover:bg-[#F2F3F5] rounded-[4px] cursor-pointer">
-                              <Edit3 className="w-3 h-3 text-[#646A75]" />
+                          <DropdownMenuContent align="end" className="min-w-[140px] p-1 shadow-lg border border-[#DEE0E3] bg-white rounded-[8px]">
+                            <DropdownMenuItem onClick={() => onEdit(record)} className="flex items-center justify-start gap-2.5 px-2.5 py-1.5 text-[12px] text-[#1F2329] hover:bg-[#F2F3F5] rounded-[4px] cursor-pointer">
+                              <Edit3 className="w-3.5 h-3.5 text-[#646A75] shrink-0" />
                               <span>编辑配置</span>
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => onViewLogs(record)} className="flex items-center gap-2 px-2.5 py-1.5 text-[12px] text-[#1F2329] hover:bg-[#F2F3F5] rounded-[4px] cursor-pointer">
-                              <Terminal className="w-3 h-3 text-[#646A75]" />
+                            <DropdownMenuItem onClick={() => onViewLogs(record)} className="flex items-center justify-start gap-2.5 px-2.5 py-1.5 text-[12px] text-[#1F2329] hover:bg-[#F2F3F5] rounded-[4px] cursor-pointer">
+                              <Terminal className="w-3.5 h-3.5 text-[#646A75] shrink-0" />
                               <span>查看日志</span>
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => onDiagnose(record)} className="flex items-center gap-2 px-2.5 py-1.5 text-[12px] text-[#1F2329] hover:bg-[#F2F3F5] rounded-[4px] cursor-pointer">
-                              <Wifi className="w-3 h-3 text-[#646A75]" />
+                            <DropdownMenuItem onClick={() => onDiagnose(record)} className="flex items-center justify-start gap-2.5 px-2.5 py-1.5 text-[12px] text-[#1F2329] hover:bg-[#F2F3F5] rounded-[4px] cursor-pointer">
+                              <Wifi className="w-3.5 h-3.5 text-[#646A75] shrink-0" />
                               <span>网络连通性检测</span>
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => onSync(record)} className="flex items-center gap-2 px-2.5 py-1.5 text-[12px] text-[#1F2329] hover:bg-[#F2F3F5] rounded-[4px] cursor-pointer">
-                              <QrCode className="w-3.5 h-3.5 text-[#646A75]" />
+                            <DropdownMenuItem onClick={() => onSync(record)} className="flex items-center justify-start gap-2.5 px-2.5 py-1.5 text-[12px] text-[#1F2329] hover:bg-[#F2F3F5] rounded-[4px] cursor-pointer">
+                              <QrCode className="w-3.5 h-3.5 text-[#646A75] shrink-0" />
                               <span>扫码分享</span>
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => onClone(record)} className="flex items-center gap-2 px-2.5 py-1.5 text-[12px] text-[#1F2329] hover:bg-[#F2F3F5] rounded-[4px] cursor-pointer">
-                              <Copy className="w-3 h-3 text-[#646A75]" />
+                            <DropdownMenuItem onClick={() => onClone(record)} className="flex items-center justify-start gap-2.5 px-2.5 py-1.5 text-[12px] text-[#1F2329] hover:bg-[#F2F3F5] rounded-[4px] cursor-pointer">
+                              <Copy className="w-3.5 h-3.5 text-[#646A75] shrink-0" />
                               <span>克隆副本</span>
                             </DropdownMenuItem>
                             {onTogglePin && (
-                              <DropdownMenuItem onClick={() => onTogglePin(record)} className="flex items-center gap-2 px-2.5 py-1.5 text-[12px] text-[#1F2329] hover:bg-[#F2F3F5] rounded-[4px] cursor-pointer">
+                              <DropdownMenuItem onClick={() => onTogglePin(record)} className="flex items-center justify-start gap-2.5 px-2.5 py-1.5 text-[12px] text-[#1F2329] hover:bg-[#F2F3F5] rounded-[4px] cursor-pointer">
+                                {record.isPinned ? (
+                                  <PinOff className="w-3.5 h-3.5 text-[#646A75] shrink-0" />
+                                ) : (
+                                  <Pin className="w-3.5 h-3.5 text-[#646A75] shrink-0" />
+                                )}
                                 <span>{record.isPinned ? '取消置顶' : '置顶连接'}</span>
                               </DropdownMenuItem>
                             )}
-                            <DropdownMenuSeparator className="my-1 bg-[#EFF0F1]" />
-                            <DropdownMenuItem onClick={() => onDelete(record)} className="flex items-center gap-2 px-2.5 py-1.5 text-[12px] text-[#F53F3F] hover:bg-[#FFECEC] rounded-[4px] cursor-pointer">
-                              <DeleteIcon className="w-3.5 h-3.5 text-[#F53F3F]" />
-                              <span>删除连接</span>
-                            </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>

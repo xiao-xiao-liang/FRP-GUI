@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, useNavigate, useLocation, useSearchParams
 import { listen } from '@tauri-apps/api/event';
 import { DiagnosticResult, FrpCore, FrpServerNode, Profile, ProfileGroup, FrpcRuntimeStateEvent, FrpcFailureKind, FrpcRuntimeLogEvent, LogEntry } from './types/frp';
 import { DEFAULT_FRPC_CONFIG, DEFAULT_FRPS_CONFIG, serializeFrpcToml, serializeFrpsToml } from './services/toml-sync';
-import { startProfileInstance, stopProfileInstance, isTauriEnv, getRuntimeStates, getRuntimeLogs, subscribeRuntimeEvents, storeProfileSecret, loadProfileSecret, deleteProfileSecret } from './services/ipc';
+import { startProfileInstance, stopProfileInstance, isTauriEnv, getRuntimeStates, getRuntimeLogs, subscribeRuntimeEvents, storeProfileSecret, loadProfileSecret, deleteProfileSecret, saveProfileTomlToCore } from './services/ipc';
 import { syncAppSettings, exitDesktopApp, hideMainWindow } from './services/ipc';
 import { parseProfileSecret, profileCredentialReference, sanitizeProfileForStorage, serializeProfileSecret } from './services/profile-secrets';
 import { AppSettings, loadAppSettings, saveAppSettings } from './services/app-settings';
@@ -496,18 +496,21 @@ export function AppLayout() {
 
         if (event.status === 'running') {
           nextPid = event.pid;
-          nextStartTime = profile.stats.startTime || Date.now();
+          // 若此前已记录本次启动时间则保留；若没有（例如外部已在运行的状态同步），以事件时间戳或当前时间兜底
+          nextStartTime = profile.stats.startTime || (typeof event.timestamp === 'number' && event.timestamp > 0 ? event.timestamp : Date.now());
           nextLastError = undefined;
           nextLastFailureKind = undefined;
         } else if (event.status === 'stopped') {
           nextPid = undefined;
-          nextStartTime = undefined;
+          // 停止时完整保留上次启动时间（历史最后一次启动的时间戳），绝不清空为 undefined
+          nextStartTime = profile.stats.startTime;
           nextLastError = undefined;
           nextLastFailureKind = undefined;
           nextLastWarning = undefined;
         } else if (event.status === 'error') {
           nextPid = undefined;
-          nextStartTime = undefined;
+          // 异常时完整保留上次启动时间，绝不清空为 undefined
+          nextStartTime = profile.stats.startTime;
           nextLastError = event.errorMessage || '进程运行异常';
           nextLastWarning = undefined;
           if (profile.status === 'running' || profile.status === 'starting') {
@@ -676,10 +679,48 @@ export function AppLayout() {
         return;
       }
 
+      // 启动前检查并在必要时补全 profile 的 rawToml 配置
+      let effectiveProfile = p;
+      if (!effectiveProfile.rawToml?.trim()) {
+        try {
+          const reference = profileCredentialReference(p.id);
+          const stored = await loadProfileSecret(reference);
+          const secret = stored ? parseProfileSecret(stored) : null;
+          if (secret?.rawToml?.trim()) {
+            effectiveProfile = {
+              ...effectiveProfile,
+              rawToml: secret.rawToml,
+              config: {
+                ...effectiveProfile.config,
+                ...secret.config,
+                authToken: effectiveProfile.config.authToken ?? secret.config.authToken,
+              },
+            };
+          } else if (effectiveProfile.config) {
+            const serialized = (
+              effectiveProfile.type === 'frps'
+                ? serializeFrpsToml(effectiveProfile.config as any)
+                : serializeFrpcToml(effectiveProfile.config as any)
+            ).trim();
+            if (serialized) {
+              effectiveProfile = { ...effectiveProfile, rawToml: serialized };
+            }
+          }
+        } catch (err) {
+          console.warn(`[handleToggleProfile] 恢复方案 ${p.id} 配置失败:`, err);
+        }
+
+        if (effectiveProfile.rawToml?.trim()) {
+          setProfiles((prev) => prev.map((item) => (item.id === p.id ? effectiveProfile : item)));
+        }
+      }
+
       // 启动前清除该方案既有的运行期日志，防止重启后新运行期日志条数较少时残留旧日志尾部
       setRuntimeLogs((prev) => prev.filter((entry) => entry.profileId !== p.id));
 
-      // 请求被接受前设为 starting，清除之前的 lastFailureKind 与 lastError
+      const startTimestamp = Date.now();
+
+      // 请求被接受前设为 starting，清除之前的 lastFailureKind 与 lastError，并预置本次启动时间
       setProfiles((prev) =>
         prev.map((item) =>
           item.id === p.id
@@ -688,6 +729,7 @@ export function AppLayout() {
                 status: 'starting',
                 stats: {
                   ...item.stats,
+                  startTime: startTimestamp,
                   lastError: undefined,
                   lastFailureKind: undefined,
                   lastWarning: undefined,
@@ -698,7 +740,7 @@ export function AppLayout() {
       );
 
       try {
-        const res = await startProfileInstance(p, profileCore, linkedServerNode?.credentialRef);
+        const res = await startProfileInstance(effectiveProfile, profileCore, linkedServerNode?.credentialRef);
         if (res.accepted) {
           // 仅表示后端已接受启动请求并进入确认期；绝不在此将状态设为 running
           const states = await getRuntimeStates();
@@ -717,6 +759,7 @@ export function AppLayout() {
                     status: 'error',
                     stats: {
                       ...item.stats,
+                      startTime: p.stats.startTime,
                       lastError: errorMessage,
                       lastFailureKind: res.failureKind,
                       pid: undefined,
@@ -737,6 +780,7 @@ export function AppLayout() {
                   status: 'error',
                   stats: {
                     ...item.stats,
+                    startTime: p.stats.startTime,
                     lastError: errorMessage,
                     lastFailureKind: undefined,
                     pid: undefined,
@@ -798,7 +842,7 @@ export function AppLayout() {
 
 
   // 保存方案 (新建 / 编辑)
-  const handleSaveProfile = (savedProfile: Profile) => {
+  const handleSaveProfile = async (savedProfile: Profile) => {
     setProfiles((prev) => {
       const exists = prev.some((item) => item.id === savedProfile.id);
       if (exists) {
@@ -807,7 +851,26 @@ export function AppLayout() {
         return [savedProfile, ...prev];
       }
     });
-    feishuToast.success(`方案 [${savedProfile.name}] 配置已保存并同步`);
+
+    // 立即同步写入系统安全凭据库，避免仅依赖 useEffect 的异步时序竞争
+    if (isTauriEnv() && savedProfile.rawToml?.trim()) {
+      try {
+        const reference = profileCredentialReference(savedProfile.id);
+        const serialized = serializeProfileSecret(savedProfile);
+        await storeProfileSecret(reference, serialized);
+        profileSecretWritesRef.current.set(savedProfile.id, serialized);
+      } catch (err) {
+        console.error(`Failed to store secret on save for profile ${savedProfile.id}:`, err);
+      }
+    }
+
+    // 若该连接配置了已下载的核心，则同步写入核心安装目录下的 TOML 文件
+    const profileCore = cores.find((c) => c.id === savedProfile.coreId && c.path);
+    if (profileCore?.path && savedProfile.rawToml?.trim()) {
+      await saveProfileTomlToCore(profileCore.path, savedProfile.name, savedProfile.rawToml);
+    }
+
+    feishuToast.success('保存成功');
   };
 
   const handleCreateGroup = (name: string) => {
@@ -1047,7 +1110,6 @@ export function AppLayout() {
                 <TerminalIcon className="w-4 h-4 shrink-0" />
                 <span className="truncate">实时日志</span>
               </div>
-              <span className="w-2 h-2 rounded-full bg-[#00B42A] animate-pulse shrink-0" title="实时流已就绪"></span>
             </button>
 
             <button

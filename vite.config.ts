@@ -342,7 +342,16 @@ export default defineConfig({
     strictPort: true,
     open: false,
     watch: {
-      ignored: ['**/src-tauri/**'],
+      ignored: [
+        '**/node_modules/**',
+        '**/.git/**',
+        '**/dist/**',
+        '**/src-tauri/**',
+        '**/data/**',
+        '**/.superpowers/**',
+        /[\\/]data[\\/]/,
+        /[\\/]src-tauri[\\/]/,
+      ],
     },
   },
   clearScreen: false,

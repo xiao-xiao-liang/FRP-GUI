@@ -5,10 +5,14 @@ import { ConfigEditorModal } from './ConfigEditorModal';
 import { makeCore, makeProfile } from '../../test/fixtures';
 import * as ipc from '../../services/ipc';
 
-vi.mock('../../services/ipc', () => ({
-  testServerConnectivity: vi.fn(),
-  loadProfileSecret: vi.fn(),
-}));
+vi.mock('../../services/ipc', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/ipc')>();
+  return {
+    ...actual,
+    testServerConnectivity: vi.fn(),
+    loadProfileSecret: vi.fn(),
+  };
+});
 
 describe('ConfigEditorModal', () => {
   const activeCore = makeCore();

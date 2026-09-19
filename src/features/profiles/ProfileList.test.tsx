@@ -261,18 +261,18 @@ describe('ProfileList (我的连接表格化呈现)', () => {
         />
       );
 
-      // p1: 1 条规则 TCP 5000 → 15000
-      expect(screen.getByText('5000 → 15000')).toBeInTheDocument();
+      // p1: 1 条规则 TCP 127.0.0.1:5000 → 1.2.3.4:15000
+      expect(screen.getByText('127.0.0.1:5000 → 1.2.3.4:15000')).toBeInTheDocument();
 
-      // p2: 2 条规则 HTTP 80 → 8080 和 HTTPS 443 → 8443
-      expect(screen.getByText('80 → 8080')).toBeInTheDocument();
-      expect(screen.getByText('443 → 8443')).toBeInTheDocument();
+      // p2: 2 条规则 HTTP 127.0.0.1:80 → 1.2.3.4:8080 和 HTTPS 127.0.0.1:443 → 1.2.3.4:8443
+      expect(screen.getByText('127.0.0.1:80 → 1.2.3.4:8080')).toBeInTheDocument();
+      expect(screen.getByText('127.0.0.1:443 → 1.2.3.4:8443')).toBeInTheDocument();
 
       // p3: 4 条规则，显示前两条和查看更多（+2 条）
-      expect(screen.getByText('1001 → 2001')).toBeInTheDocument();
-      expect(screen.getByText('1002 → 2002')).toBeInTheDocument();
+      expect(screen.getByText('127.0.0.1:1001 → 1.2.3.4:2001')).toBeInTheDocument();
+      expect(screen.getByText('127.0.0.1:1002 → 1.2.3.4:2002')).toBeInTheDocument();
       expect(screen.getByText(/查看更多（\+2 条）/)).toBeInTheDocument();
-      expect(screen.queryByText('1003 → 2003')).not.toBeInTheDocument();
+      expect(screen.queryByText('127.0.0.1:1003 → 1.2.3.4:2003')).not.toBeInTheDocument();
     });
 
     it('点击规则预览区域打开规则详情弹层，展示全部规则', async () => {

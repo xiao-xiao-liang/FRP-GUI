@@ -111,6 +111,7 @@ export interface FeishuSortRule {
 
 export interface FeishuDataTableProps<T> {
   title?: string;
+  titleRight?: React.ReactNode;
   columns: FeishuColumn<T>[];
   data: T[];
   rowKey: keyof T | ((record: T) => string | number);
@@ -166,6 +167,7 @@ function estimateStringWidth(str: string): number {
  */
 export function FeishuDataTable<T extends Record<string, any>>({
                                                                  title,
+                                                                 titleRight,
                                                                  columns,
                                                                  data = [],
                                                                  rowKey,
@@ -650,6 +652,7 @@ export function FeishuDataTable<T extends Record<string, any>>({
       {/* 2. 飞书原生功能工具栏 */}
       <FeishuToolbar
         title={title}
+        titleRight={titleRight}
         totalCount={processedData.length}
         searchable={searchable}
         searchPlaceholder={searchPlaceholder}

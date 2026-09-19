@@ -38,6 +38,7 @@ pub const ERR_UNEXPECTED_EXIT: &str = "FRPC 进程已意外退出";
 pub const ERR_NOT_FOUND_OR_STOPPED: &str = "未找到受监管的运行中 FRPC 进程";
 pub const ERR_STOP_FAILED: &str = "停止 FRPC 实例失败";
 pub const ERR_STOP_TIMEOUT: &str = "停止 FRPC 实例超时";
+pub const ERR_CONFIG_EMPTY: &str = "配置文件内容为空，拒绝启动或写入";
 
 pub const FAILURE_CORE_INVALID: &str = "core_invalid";
 pub const FAILURE_STARTUP: &str = "startup";
@@ -108,6 +109,16 @@ pub fn validate_profile_id(profile_id: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// 移除 Windows 平台下的 \\?\ 扩展路径前缀，确保路径友好可读
+pub fn strip_windows_verbatim_prefix(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        path.to_path_buf()
+    }
+}
+
 /// 校验核心程序是否为存在且合规的本地文件（使用固定安全错误，不泄露路径）
 pub fn validate_core_path(core_path: &str) -> Result<PathBuf, String> {
     if core_path.trim().is_empty() {
@@ -117,7 +128,8 @@ pub fn validate_core_path(core_path: &str) -> Result<PathBuf, String> {
     if !path.exists() || !path.is_file() {
         return Err(ERR_CORE_NOT_FOUND.to_string());
     }
-    std::fs::canonicalize(&path).map_err(|_| ERR_CORE_NOT_FOUND.to_string())
+    let canonical = std::fs::canonicalize(&path).map_err(|_| ERR_CORE_NOT_FOUND.to_string())?;
+    Ok(strip_windows_verbatim_prefix(&canonical))
 }
 
 pub fn validate_frpc_file_name(path: &Path) -> Result<(), String> {
@@ -371,6 +383,9 @@ pub fn write_runtime_config(
     profile_id: &str,
     toml_content: &str,
 ) -> Result<PathBuf, String> {
+    if toml_content.trim().is_empty() {
+        return Err(ERR_CONFIG_EMPTY.to_string());
+    }
     let config_path = get_runtime_config_path(base_dir, profile_id)?;
     std::fs::write(&config_path, toml_content).map_err(|_| ERR_WRITE_CONFIG_FAILED.to_string())?;
 
@@ -382,6 +397,61 @@ pub fn write_runtime_config(
     }
 
     Ok(config_path)
+}
+
+/// 清理文件名中的非法字符，生成安全的 TOML 文件主名
+pub fn sanitize_file_stem(name: &str) -> String {
+    let mut sanitized = String::with_capacity(name.len());
+    for c in name.chars() {
+        if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0'..='\x1f') {
+            sanitized.push('_');
+        } else {
+            sanitized.push(c);
+        }
+    }
+    let trimmed = sanitized.trim().trim_matches('.');
+    if trimmed.is_empty() {
+        "profile".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// 将方案的 TOML 配置文件写入到所选 FRP 核心可执行程序的同级目录下
+pub fn write_profile_toml_to_core_dir(
+    core_path: &Path,
+    profile_name: &str,
+    toml_content: &str,
+) -> Result<PathBuf, String> {
+    if toml_content.trim().is_empty() {
+        return Err(ERR_CONFIG_EMPTY.to_string());
+    }
+    let core_dir = core_path
+        .parent()
+        .ok_or_else(|| "无法获取核心程序所在目录".to_string())?;
+    if !core_dir.exists() {
+        return Err("核心程序所在目录不存在".to_string());
+    }
+
+    // 1. 按连接方案名称生成独立配置文件，避免同版本的多个连接相互覆盖
+    let safe_stem = sanitize_file_stem(profile_name);
+    let specific_toml = core_dir.join(format!("frpc_{}.toml", safe_stem));
+    std::fs::write(&specific_toml, toml_content)
+        .map_err(|e| format!("写入核心目录配置文件失败 ({}): {e}", specific_toml.display()))?;
+
+    // 2. 同时生成/同步默认 frpc.toml，便于直接在核心目录下使用命令行运行 .\frpc.exe
+    let default_toml = core_dir.join("frpc.toml");
+    let _ = std::fs::write(&default_toml, toml_content);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        let _ = std::fs::set_permissions(&specific_toml, perms);
+        let _ = std::fs::set_permissions(&default_toml, perms);
+    }
+
+    Ok(strip_windows_verbatim_prefix(&specific_toml))
 }
 
 pub enum ProcessControlCommand {
@@ -578,6 +648,19 @@ impl FrpcRuntimeManager {
         toml_content: String,
         core_path: String,
     ) -> ProcessCommandResult {
+        self.start_profile_with_name(event_sink, profile_id, None, toml_content, core_path)
+            .await
+    }
+
+    /// 启动配置对应的本地 FRPC 实例（附带连接名称，用于在核心目录生成友好命名的 TOML）
+    pub async fn start_profile_with_name(
+        &self,
+        event_sink: Option<Arc<dyn RuntimeEventSink>>,
+        profile_id: String,
+        profile_name: Option<String>,
+        toml_content: String,
+        core_path: String,
+    ) -> ProcessCommandResult {
         // 1. 严格校验 profile_id
         if !validate_profile_id(&profile_id) {
             return ProcessCommandResult {
@@ -636,16 +719,41 @@ impl FrpcRuntimeManager {
             };
         }
 
-        // 4. 写入受控配置文件
-        let config_path = match write_runtime_config(&self.base_dir, &profile_id, &toml_content) {
-            Ok(p) => p,
-            Err(e) => {
-                return ProcessCommandResult {
-                    accepted: false,
-                    pid: None,
-                    error: Some(e),
-                    failure_kind: Some(FAILURE_STARTUP.to_string()),
-                };
+        // 3.1 校验 toml_content 非空，杜绝 0 字节配置被写入核心目录及执行
+        if toml_content.trim().is_empty() {
+            return ProcessCommandResult {
+                accepted: false,
+                pid: None,
+                error: Some(ERR_CONFIG_EMPTY.to_string()),
+                failure_kind: Some(FAILURE_STARTUP.to_string()),
+            };
+        }
+
+        // 4. 写入受控配置文件（优先写入核心安装目录；失败则降级写入应用受控 runtime-config 目录）
+        let target_name = profile_name
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(&profile_id);
+
+        let config_path = match write_profile_toml_to_core_dir(&canonical_core, target_name, &toml_content) {
+            Ok(core_cfg) => {
+                // 同时保留一份备份在应用的 runtime-config 目录
+                let _ = write_runtime_config(&self.base_dir, &profile_id, &toml_content);
+                core_cfg
+            }
+            Err(_) => {
+                // 核心目录写入失败（例如权限受限目录），降级回退到 runtime-config 目录
+                match write_runtime_config(&self.base_dir, &profile_id, &toml_content) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return ProcessCommandResult {
+                            accepted: false,
+                            pid: None,
+                            error: Some(e),
+                            failure_kind: Some(FAILURE_STARTUP.to_string()),
+                        };
+                    }
+                }
             }
         };
 
@@ -1720,5 +1828,65 @@ pub mod tests {
         assert_eq!(error_event.status, STATUS_ERROR);
         assert_eq!(error_event.pid, None);
         assert_eq!(error_event.error_message, Some("出错了".to_string()));
+    }
+
+    #[test]
+    fn test_sanitize_file_stem() {
+        assert_eq!(sanitize_file_stem("公网服务器穿透 (118.195.146.161)"), "公网服务器穿透 (118.195.146.161)");
+        assert_eq!(sanitize_file_stem("a/b\\c:d*e?f\"g<h>i|j"), "a_b_c_d_e_f_g_h_i_j");
+        assert_eq!(sanitize_file_stem("   ...   "), "profile");
+        assert_eq!(sanitize_file_stem(""), "profile");
+    }
+
+    #[test]
+    fn test_write_profile_toml_to_core_dir() {
+        let temp_dir = std::env::temp_dir().join(format!("frp_core_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let fake_core = temp_dir.join("frpc.exe");
+        std::fs::write(&fake_core, "binary").unwrap();
+
+        let toml_content = "serverAddr = \"1.2.3.4\"\nserverPort = 7000\n";
+        let specific_path = write_profile_toml_to_core_dir(&fake_core, "我的服务器", toml_content).unwrap();
+
+        assert_eq!(specific_path, temp_dir.join("frpc_我的服务器.toml"));
+        assert!(specific_path.exists());
+        assert_eq!(std::fs::read_to_string(&specific_path).unwrap(), toml_content);
+
+        // 同时验证默认 frpc.toml 存在且内容一致
+        let default_path = temp_dir.join("frpc.toml");
+        assert!(default_path.exists());
+        assert_eq!(std::fs::read_to_string(&default_path).unwrap(), toml_content);
+
+        // 清理测试目录
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_write_profile_toml_to_core_dir_rejects_empty() {
+        let temp_dir = std::env::temp_dir().join(format!("frp_core_test_empty_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let fake_core = temp_dir.join("frpc.exe");
+        std::fs::write(&fake_core, "binary").unwrap();
+
+        // 空字符串或纯空格均被拒绝
+        assert!(write_profile_toml_to_core_dir(&fake_core, "空方案", "").is_err());
+        assert!(write_profile_toml_to_core_dir(&fake_core, "空方案", "   \n\t  ").is_err());
+
+        // 验证没有生成 0 字节文件
+        assert!(!temp_dir.join("frpc_空方案.toml").exists());
+        assert!(!temp_dir.join("frpc.toml").exists());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_write_runtime_config_rejects_empty() {
+        let temp_dir = std::env::temp_dir().join(format!("frp_runtime_test_empty_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        assert!(write_runtime_config(&temp_dir, "prof_empty", "").is_err());
+        assert!(write_runtime_config(&temp_dir, "prof_empty", "  \n  ").is_err());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

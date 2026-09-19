@@ -17,6 +17,7 @@ pub mod frpc_runtime;
 pub mod app_lifecycle;
 pub mod core_import;
 pub mod core_download;
+pub mod app_paths;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -272,11 +273,22 @@ async fn start_profile(
     app: AppHandle,
     state: State<'_, AppState>,
     profile_id: String,
+    profile_name: Option<String>,
     _profile_type: String,
     toml_content: String,
     core_path: String,
     server_credential_ref: Option<String>,
 ) -> Result<ProcessStartResult, String> {
+    if toml_content.trim().is_empty() {
+        return Ok(ProcessStartResult {
+            accepted: false,
+            success: false,
+            pid: None,
+            error: Some("启动失败：配置文件内容为空 (0 字节)，请在连接编辑中检查配置并重新保存".to_string()),
+            failure_kind: Some("startup".to_string()),
+        });
+    }
+
     let effective_toml = if let Some(reference) = server_credential_ref {
         let credentials = credential_store::load_frps_deployment_credentials(&reference)
             .map_err(|_| "无法读取已部署 FRPS 节点的安全凭据".to_string())?;
@@ -291,7 +303,7 @@ async fn start_profile(
     let sink: Arc<dyn frpc_runtime::RuntimeEventSink> = Arc::new(frpc_runtime::TauriEventSink::new(app));
     let res = state
         .frpc_manager
-        .start_profile(Some(sink), profile_id, effective_toml, core_path)
+        .start_profile_with_name(Some(sink), profile_id, profile_name, effective_toml, core_path)
         .await;
 
     Ok(ProcessStartResult {
@@ -302,6 +314,21 @@ async fn start_profile(
         failure_kind: res.failure_kind,
     })
 }
+
+#[tauri::command]
+async fn save_profile_toml_to_core(
+    core_path: String,
+    profile_name: String,
+    toml_content: String,
+) -> Result<String, String> {
+    if toml_content.trim().is_empty() {
+        return Err("配置文件内容为空，拒绝保存到核心目录".to_string());
+    }
+    let canonical_core = frpc_runtime::validate_core_path(&core_path)?;
+    let written_path = frpc_runtime::write_profile_toml_to_core_dir(&canonical_core, &profile_name, &toml_content)?;
+    Ok(written_path.to_string_lossy().to_string())
+}
+
 
 #[tauri::command]
 async fn stop_profile(
@@ -766,15 +793,22 @@ async fn run_frps_operation(
     frps_deployment::run_frps_operation(request).await
 }
 
+#[tauri::command]
+fn get_default_cores_dir() -> String {
+    app_paths::get_default_cores_dir().to_string_lossy().to_string()
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let local_data_dir = app
-                .path()
-                .app_local_data_dir()
-                .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, format!("无法获取受控数据目录: {}", e))) as Box<dyn std::error::Error>)?;
-            let manager = Arc::new(frpc_runtime::FrpcRuntimeManager::new(local_data_dir));
-            let core_download_manager = Arc::new(core_download::CoreDownloadManager::new(app.path().app_data_dir().map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, format!("无法获取核心下载缓存目录: {}", e))) as Box<dyn std::error::Error>)?.join("core-downloads")));
+            let _ = app_paths::ensure_data_subdirs();
+            app_paths::migrate_legacy_data_if_needed(app.handle());
+
+            let portable_root = app_paths::get_portable_data_dir();
+            let manager = Arc::new(frpc_runtime::FrpcRuntimeManager::new(portable_root));
+            let core_download_manager = Arc::new(core_download::CoreDownloadManager::new(
+                app_paths::get_core_downloads_dir(),
+            ));
             app.manage(AppState {
                 frpc_manager: manager,
                 core_download_manager,
@@ -831,6 +865,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             start_profile,
+            save_profile_toml_to_core,
             stop_profile,
             get_runtime_states,
             get_runtime_logs,
@@ -846,6 +881,7 @@ pub fn run() {
             pick_archive_file,
             import_local_frpc_archive,
             get_system_platform,
+            get_default_cores_dir,
             start_core_download,
             list_core_download_tasks,
             resume_core_download,

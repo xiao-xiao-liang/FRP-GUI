@@ -826,8 +826,7 @@ describe('CoreManagerPage - Task 1: 本地核心原生选择与校验边界', ()
       });
     });
 
-    it('在已有数据状态下点击刷新按钮，只在后台旋转指示，不将现有数据回退为骨架屏', async () => {
-      const user = userEvent.setup();
+    it('在已有数据状态下初始渲染与静默拉取均不回退为骨架屏，且不展示手动刷新按钮', async () => {
       const cachedReleases = [
         {
           tag: 'v0.71.0',
@@ -852,9 +851,8 @@ describe('CoreManagerPage - Task 1: 本地核心原生选择与校验边界', ()
       // 已有数据就绪
       expect(screen.getByText('v0.71.0')).toBeInTheDocument();
 
-      // 点击刷新按钮
-      const refreshBtn = screen.getByRole('button', { name: /刷新 GitHub Releases 版本库/ });
-      await user.click(refreshBtn);
+      // 手动刷新按钮已移除，依赖自动化生命周期同步
+      expect(screen.queryByRole('button', { name: /刷新 GitHub Releases 版本库/ })).toBeNull();
 
       // 绝不回退为骨架屏，数据持续可见
       expect(screen.queryByTestId('table-skeleton-row')).toBeNull();
