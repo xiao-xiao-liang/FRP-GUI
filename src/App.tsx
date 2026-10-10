@@ -3,7 +3,8 @@ import { BrowserRouter, Routes, Route, useNavigate, useLocation, useSearchParams
 import { listen } from '@tauri-apps/api/event';
 import { DiagnosticResult, FrpCore, FrpServerNode, Profile, ProfileGroup, FrpcRuntimeStateEvent, FrpcFailureKind, FrpcRuntimeLogEvent, LogEntry } from './types/frp';
 import { DEFAULT_FRPC_CONFIG, DEFAULT_FRPS_CONFIG, serializeFrpcToml, serializeFrpsToml } from './services/toml-sync';
-import { startProfileInstance, stopProfileInstance, isTauriEnv, getRuntimeStates, getRuntimeLogs, subscribeRuntimeEvents, storeProfileSecret, loadProfileSecret, deleteProfileSecret, saveProfileTomlToCore, sanitizeRuntimeText } from './services/ipc';
+import { startProfileInstance, stopProfileInstance, isTauriEnv, getRuntimeStates, getRuntimeLogs, getRuntimeTraffic, subscribeRuntimeEvents, storeProfileSecret, loadProfileSecret, deleteProfileSecret, saveProfileTomlToCore, sanitizeRuntimeText } from './services/ipc';
+import { applyRuntimeTrafficState, mergeRuntimeTraffic, type RuntimeTrafficState } from './services/runtime-traffic';
 import { syncAppSettings, exitDesktopApp, hideMainWindow } from './services/ipc';
 import { parseProfileSecret, profileCredentialReference, sanitizeProfileForStorage, serializeProfileSecret } from './services/profile-secrets';
 import { AppSettings, loadAppSettings, saveAppSettings } from './services/app-settings';
@@ -479,6 +480,7 @@ export function AppLayout() {
   const profilesRef = useRef(profiles);
   profilesRef.current = profiles;
   const [runtimeLogs, setRuntimeLogs] = useState<LogEntry[]>([]);
+  const [runtimeTraffic, setRuntimeTraffic] = useState<RuntimeTrafficState>({});
   const runtimeLogsRef = useRef<LogEntry[]>([]);
   const pendingStartsRef = useRef<Set<string>>(new Set());
   const startAttemptTimesRef = useRef<Map<string, number>>(new Map());
@@ -517,6 +519,7 @@ export function AppLayout() {
     }
     latestEventTimestampsRef.current.set(event.profileId, event.timestamp);
     latestRuntimeStatesRef.current.set(event.profileId, event);
+    setRuntimeTraffic((previous) => applyRuntimeTrafficState(previous, event));
     if (event.status === 'error') {
       failureFallbacksRef.current.set(event.profileId, sanitizeRuntimeText(event.errorMessage || '进程运行异常'));
     }
@@ -661,6 +664,10 @@ export function AppLayout() {
         (event) => {
           if (!isMounted || isCleanedUp) return;
           applyRuntimeState(event);
+        },
+        (event) => {
+          if (!isMounted || isCleanedUp || !profilesRef.current.some((profile) => profile.id === event.profileId)) return;
+          setRuntimeTraffic((previous) => mergeRuntimeTraffic(previous, [event]));
         }
       ).then(async (unlisten) => {
         // 若在订阅完成前组件已卸载，必须立即解绑，防止监听器泄漏
@@ -682,10 +689,16 @@ export function AppLayout() {
               applyRuntimeState(state, false);
             }
           }
+          const traffic = await getRuntimeTraffic();
+          if (isCleanedUp || !isMounted) return;
+          setRuntimeTraffic((previous) => mergeRuntimeTraffic(previous,
+            traffic.filter((sample) => profilesRef.current.some((profile) => profile.id === sample.profileId))));
           await hydrateRuntimeLogs();
         } catch (e) {
           console.error('Failed to get runtime states/logs:', e);
         }
+      }).catch((error) => {
+        console.error('订阅桌面运行期事件失败：', error);
       });
     }
 
@@ -777,6 +790,7 @@ export function AppLayout() {
       setRuntimeLogs(runtimeLogsRef.current);
 
       const startTimestamp = Date.now();
+      setRuntimeTraffic((previous) => applyRuntimeTrafficState(previous, { profileId: p.id, status: 'starting', timestamp: startTimestamp }));
       pendingStartsRef.current.add(p.id);
       startAttemptTimesRef.current.set(p.id, startTimestamp);
       latestEventTimestampsRef.current.set(p.id, startTimestamp);
@@ -824,6 +838,7 @@ export function AppLayout() {
             notifyProfileIssue(p.id, warning.message);
           }
         } else {
+          setRuntimeTraffic((previous) => applyRuntimeTrafficState(previous, { profileId: p.id, status: 'error', timestamp: Date.now() }));
           await hydrateRuntimeLogs(p.id);
           const fallback = sanitizeRuntimeText(res.error || 'FRP 进程启动失败，请检查核心、服务器地址和认证信息');
           failureFallbacksRef.current.set(p.id, fallback);
@@ -848,6 +863,7 @@ export function AppLayout() {
           notifyProfileIssue(p.id, errorMessage, res.failureKind);
         }
       } catch (e: any) {
+        setRuntimeTraffic((previous) => applyRuntimeTrafficState(previous, { profileId: p.id, status: 'error', timestamp: Date.now() }));
         await hydrateRuntimeLogs(p.id);
         const fallback = sanitizeRuntimeText(e?.message || '操作异常');
         failureFallbacksRef.current.set(p.id, fallback);
@@ -875,6 +891,7 @@ export function AppLayout() {
       }
     } else {
       // 停止：先设为 stopping，清除 lastFailureKind
+      setRuntimeTraffic((previous) => applyRuntimeTrafficState(previous, { profileId: p.id, status: 'stopping', timestamp: Date.now() }));
       setProfiles((prev) =>
         prev.map((item) =>
           item.id === p.id
@@ -1273,7 +1290,7 @@ export function AppLayout() {
               element={
                 <ProfileList
                   profiles={profiles}
-                  activeCore={activeCore}
+                  traffic={runtimeTraffic}
                   defaultSort={appSettings.profileSort}
                   isBatchOperating={isBatchOperating}
                   onTogglePin={handleTogglePin}
@@ -1291,7 +1308,6 @@ export function AppLayout() {
                   onViewLogs={handleViewLogs}
                   onDiagnose={(profile) => handleOpenDiagnostics(profile)}
                   onRepairCore={handleRepairCore}
-                  onOpenCores={() => navigate('/cores')}
                   onCreateNew={() => {
                     setEditingProfile(null);
                     setIsEditorOpen(true);

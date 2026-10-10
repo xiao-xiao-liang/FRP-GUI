@@ -1,14 +1,14 @@
-import React, { useMemo } from 'react';
-import { FrpCore, Profile } from '../../types/frp';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Profile } from '../../types/frp';
 import { FeishuPill } from '../../components/ui/feishu-table/FeishuPill';
 import { Button } from '../../components/ui/button';
 import { getProfileIssue } from '../../services/profile-issues';
+import { formatTrafficRate, summarizeRuntimeTraffic, type RuntimeTrafficState } from '../../services/runtime-traffic';
 import { AlertCircle } from 'lucide-react';
 
 export interface ProfileMetricsCardsProps {
   profiles: Profile[];
-  activeCore?: FrpCore | null;
-  onOpenCores?: () => void;
+  traffic?: RuntimeTrafficState;
   onDiagnose?: (profile: Profile) => void;
   onViewLogs?: (profile: Profile) => void;
   onEdit?: (profile: Profile) => void;
@@ -17,8 +17,7 @@ export interface ProfileMetricsCardsProps {
 
 export const ProfileMetricsCards: React.FC<ProfileMetricsCardsProps> = ({
   profiles,
-  activeCore,
-  onOpenCores,
+  traffic = {},
   onDiagnose,
   onViewLogs,
   onEdit,
@@ -26,25 +25,21 @@ export const ProfileMetricsCards: React.FC<ProfileMetricsCardsProps> = ({
 }) => {
   const runningProfiles = useMemo(() => profiles.filter((p) => p.status === 'running'), [profiles]);
   const runningCount = runningProfiles.length;
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (runningCount === 0) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [runningCount]);
+  const trafficSummary = summarizeRuntimeTraffic(profiles, traffic, Math.max(now, Date.now()));
   const profileIssues = useMemo(() => profiles.flatMap((profile) => {
     const issue = getProfileIssue(profile);
     return issue ? [{ profile, issue }] : [];
   }), [profiles]);
   const issueCount = profileIssues.length;
-  const coreReady = Boolean(activeCore?.path) && activeCore?.status !== 'not_downloaded';
-
-  const { activeTunnelsCount, totalTunnelsCount } = useMemo(() => {
-    let active = 0;
-    let total = 0;
-    profiles.forEach((p) => {
-      const proxies = (p.config as any)?.proxies || [];
-      total += proxies.length;
-      if (p.status === 'running') {
-        active += proxies.length;
-      }
-    });
-    return { activeTunnelsCount: active, totalTunnelsCount: total };
-  }, [profiles]);
+  const totalRulesCount = useMemo(() => profiles.reduce((total, profile) => (
+    total + ('proxies' in profile.config ? profile.config.proxies.length : 0)
+  ), 0), [profiles]);
 
   return (
     <div className="space-y-3.5">
@@ -70,17 +65,17 @@ export const ProfileMetricsCards: React.FC<ProfileMetricsCardsProps> = ({
           )}
         </div>
 
-        {/* 指标卡 2: 在线隧道 */}
+        {/* 指标卡 2: 已配置穿透规则 */}
         <div className="rounded-[12px] border border-[#DEE0E3] bg-white p-3.5 shadow-2xs hover:shadow-xs transition-shadow flex items-center justify-between">
           <div>
-            <span className="text-[13px] text-[#646A75] font-normal block">在线穿透隧道</span>
+            <span className="text-[13px] text-[#646A75] font-normal block">穿透规则</span>
             <div className="mt-1 text-[24px] font-bold text-[#165DFF] tracking-tight leading-none tabular-nums">
-              {activeTunnelsCount}
-              <span className="text-[12px] font-normal text-[#8F959E] ml-1.5">/ {totalTunnelsCount} 规则</span>
+              {totalRulesCount}
+              <span className="text-[12px] font-normal text-[#8F959E] ml-1.5">条</span>
             </div>
           </div>
-          <FeishuPill variant={activeTunnelsCount > 0 ? 'green' : 'gray'} showDot={true} className="text-[11px] h-[22px] px-2">
-            {activeTunnelsCount > 0 ? '正常工作' : '待命'}
+          <FeishuPill variant="gray" showDot={false} className="text-[11px] h-[22px] px-2">
+            已配置
           </FeishuPill>
         </div>
 
@@ -104,28 +99,33 @@ export const ProfileMetricsCards: React.FC<ProfileMetricsCardsProps> = ({
           )}
         </div>
 
-        {/* 指标卡 4: FRP 核心引擎 */}
-        <div className="rounded-[12px] border border-[#DEE0E3] bg-white p-3.5 shadow-2xs hover:shadow-xs transition-shadow flex items-center justify-between">
-          <div>
-            <span className="text-[13px] text-[#646A75] font-normal block">FRP 核心引擎</span>
-            <div className="mt-1 flex items-center gap-1.5 leading-none">
-              <span className="text-[20px] font-bold text-[#1F2329] tracking-tight tabular-nums truncate max-w-[110px]" title={activeCore?.name}>
-                {coreReady ? (activeCore?.version || '就绪') : '未配置'}
-              </span>
-              <FeishuPill variant={coreReady ? 'green' : 'gray'} showDot={coreReady} className="text-[11px] h-[20px] px-1.5 shrink-0">
-                {coreReady ? '就绪' : '待配置'}
-              </FeishuPill>
-            </div>
+        {/* 指标卡 4: 当前运行实例的传输连接速率 */}
+        <section aria-label="实时流量" className="min-w-0 rounded-[12px] border border-[#DEE0E3] bg-white p-3.5 shadow-2xs hover:shadow-xs transition-shadow flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <span className="text-[13px] text-[#646A75] font-normal block">实时流量</span>
+            {trafficSummary.uploadBytesPerSecond === null ? (
+              <div className="mt-1 text-[20px] font-bold leading-none text-[#8F959E]">—</div>
+            ) : (
+              <div className="mt-1 flex items-center gap-2 whitespace-nowrap text-[16px] font-semibold leading-none tabular-nums">
+                <span className="text-[#3370FF]" aria-label={`上行 ${formatTrafficRate(trafficSummary.uploadBytesPerSecond)}`}>↑ {formatTrafficRate(trafficSummary.uploadBytesPerSecond)}</span>
+                <span className="text-[#00856A]" aria-label={`下行 ${formatTrafficRate(trafficSummary.downloadBytesPerSecond!)}`}>↓ {formatTrafficRate(trafficSummary.downloadBytesPerSecond!)}</span>
+              </div>
+            )}
+            {trafficSummary.status !== 'idle' && (
+              <p
+                className="mt-1.5 truncate text-[11px] leading-4 text-[#646A75]"
+                title={trafficSummary.reason || trafficSummary.label}
+              >
+                {trafficSummary.label}
+              </p>
+            )}
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onOpenCores}
-            className="h-7 text-[12px] px-2.5 rounded-[6px] border-[#DEE0E3] bg-white text-[#165DFF] hover:bg-[#F0F4FF] hover:border-[#165DFF] cursor-pointer"
-          >
-            {coreReady ? '切换核心' : '配置核心'}
-          </Button>
-        </div>
+          {trafficSummary.status === 'idle' && (
+            <FeishuPill variant="gray" showDot={false} className="shrink-0 text-[11px] h-[22px] px-2">
+              未运行
+            </FeishuPill>
+          )}
+        </section>
       </div>
 
       {issueCount > 0 && (

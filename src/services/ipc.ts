@@ -14,6 +14,8 @@ import {
   ProcessCommandResult,
   ProcessStatus,
   Profile,
+  RuntimeTrafficAvailability,
+  RuntimeTrafficSample,
   ServerOperationKind,
   ServerOperationResult,
   ServerPreflightRequest,
@@ -74,6 +76,7 @@ function broadcastLog(log: LogEntry) {
 
 const VALID_LOG_LEVELS = new Set<LogLevel>(['trace', 'debug', 'info', 'warn', 'error']);
 const VALID_PROCESS_STATUSES = new Set<ProcessStatus>(['stopped', 'starting', 'running', 'stopping', 'error']);
+const VALID_TRAFFIC_AVAILABILITIES = new Set<RuntimeTrafficAvailability>(['collecting', 'available', 'unavailable', 'stopped']);
 const MAX_SAFE_RUNTIME_TEXT_LENGTH = 4096;
 
 function stripAnsiEscapeSequences(text: string): string {
@@ -155,12 +158,32 @@ function parseRuntimeStateEvent(payload: any): FrpcRuntimeStateEvent | null {
   };
 }
 
+function parseRuntimeTrafficSample(payload: unknown): RuntimeTrafficSample | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const { profileId, runId, startedAt, sequence, timestamp, availability, uploadBytesPerSecond, downloadBytesPerSecond, reason } = payload as Record<string, unknown>;
+  if (typeof profileId !== 'string' || !profileId.trim() || typeof runId !== 'string' || !runId.trim()) return null;
+  if (typeof startedAt !== 'number' || !Number.isSafeInteger(startedAt) || startedAt < 0) return null;
+  if (typeof timestamp !== 'number' || !Number.isSafeInteger(timestamp) || timestamp < 0) return null;
+  if (typeof sequence !== 'number' || !Number.isSafeInteger(sequence) || sequence <= 0) return null;
+  if (typeof availability !== 'string' || !VALID_TRAFFIC_AVAILABILITIES.has(availability as RuntimeTrafficAvailability)) return null;
+  if (typeof uploadBytesPerSecond !== 'number' || !Number.isFinite(uploadBytesPerSecond) || uploadBytesPerSecond < 0) return null;
+  if (typeof downloadBytesPerSecond !== 'number' || !Number.isFinite(downloadBytesPerSecond) || downloadBytesPerSecond < 0) return null;
+  if (reason !== undefined && reason !== null && typeof reason !== 'string') return null;
+  return {
+    profileId: profileId.trim(), runId: runId.trim(), startedAt, sequence, timestamp,
+    availability: availability as RuntimeTrafficAvailability, uploadBytesPerSecond, downloadBytesPerSecond,
+    reason: typeof reason === 'string' ? sanitizeRuntimeText(reason.trim()) : reason,
+  };
+}
+
 export type RuntimeLogHandler = (log: FrpcRuntimeLogEvent) => void;
 export type RuntimeStateHandler = (state: FrpcRuntimeStateEvent) => void;
+export type RuntimeTrafficHandler = (sample: RuntimeTrafficSample) => void;
 
 interface RuntimeSubscriber {
   onLog?: RuntimeLogHandler;
   onState?: RuntimeStateHandler;
+  onTraffic?: RuntimeTrafficHandler;
 }
 
 // 单例运行时事件桥接状态
@@ -173,6 +196,7 @@ async function ensureNativeListeners(): Promise<void> {
   if (nativeListenPromise) return nativeListenPromise;
 
   nativeListenPromise = (async () => {
+    const registeredListeners: Array<() => void> = [];
     try {
       const unlistenLog = await listen('frp-runtime-log', (event: { payload: any }) => {
         const parsed = parseRuntimeLogEvent(event?.payload);
@@ -199,6 +223,7 @@ async function ensureNativeListeners(): Promise<void> {
           raw: `[${parsed.timestamp}] [${parsed.level.toUpperCase()}] ${parsed.message}`,
         });
       });
+      registeredListeners.push(unlistenLog);
 
       const unlistenState = await listen('frp-runtime-state', (event: { payload: any }) => {
         const parsed = parseRuntimeStateEvent(event?.payload);
@@ -214,10 +239,31 @@ async function ensureNativeListeners(): Promise<void> {
           }
         }
       });
+      registeredListeners.push(unlistenState);
 
-      nativeUnlistenFns = [unlistenLog, unlistenState];
+      const unlistenTraffic = await listen('frp-runtime-traffic', (event: { payload: unknown }) => {
+        const parsed = parseRuntimeTrafficSample(event?.payload);
+        if (!parsed) return;
+        for (const subscriber of runtimeSubscribers) {
+          try {
+            subscriber.onTraffic?.(parsed);
+          } catch (error) {
+            console.error('运行期流量订阅处理失败：', error);
+          }
+        }
+      });
+      registeredListeners.push(unlistenTraffic);
+
+      nativeUnlistenFns = registeredListeners;
     } catch (err) {
-      console.error('Failed to register native Tauri runtime event listeners:', err);
+      for (const unlisten of registeredListeners) {
+        try {
+          unlisten();
+        } catch (error) {
+          console.error('撤销未完成的运行期监听失败：', error);
+        }
+      }
+      throw err;
     } finally {
       nativeListenPromise = null;
     }
@@ -255,16 +301,22 @@ export function _resetRuntimeEventBridgeForTest(): void {
  */
 export async function subscribeRuntimeEvents(
   onLog?: RuntimeLogHandler,
-  onState?: RuntimeStateHandler
+  onState?: RuntimeStateHandler,
+  onTraffic?: RuntimeTrafficHandler
 ): Promise<() => Promise<void>> {
   if (!isTauriEnv()) {
     return async () => {};
   }
 
-  const subscriber: RuntimeSubscriber = { onLog, onState };
+  const subscriber: RuntimeSubscriber = { onLog, onState, onTraffic };
   runtimeSubscribers.add(subscriber);
 
-  await ensureNativeListeners();
+  try {
+    await ensureNativeListeners();
+  } catch (error) {
+    runtimeSubscribers.delete(subscriber);
+    throw error;
+  }
 
   let unsubscribed = false;
   return async () => {
@@ -309,6 +361,20 @@ export async function getRuntimeLogs(profileId?: string): Promise<FrpcRuntimeLog
       : [];
   } catch (error) {
     console.error('Failed to get runtime logs:', error);
+    return [];
+  }
+}
+
+/** 获取当前启动周期的流量快照，普通浏览器不生成模拟流量。 */
+export async function getRuntimeTraffic(): Promise<RuntimeTrafficSample[]> {
+  if (!isTauriEnv()) return [];
+  try {
+    const payload = await tauriInvoke<unknown>('get_runtime_traffic');
+    return Array.isArray(payload)
+      ? payload.map(parseRuntimeTrafficSample).filter((sample): sample is RuntimeTrafficSample => sample !== null)
+      : [];
+  } catch (error) {
+    console.error('获取运行期流量快照失败：', error);
     return [];
   }
 }

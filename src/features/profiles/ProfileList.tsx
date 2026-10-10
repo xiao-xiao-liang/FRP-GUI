@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
-import { FrpCore, Profile, ProfileSort } from '../../types/frp';
+import { Profile, ProfileSort } from '../../types/frp';
+import type { RuntimeTrafficState } from '../../services/runtime-traffic';
 import { Button } from '../../components/ui/button';
 import { sortProfiles, getBatchActionTargets } from '../../services/profile-organization';
 import { FeishuDialog } from '../../components/ui/FeishuDialog';
@@ -11,7 +12,7 @@ import { Plus } from 'lucide-react';
 
 interface ProfileListProps {
   profiles: Profile[];
-  activeCore?: FrpCore | null;
+  traffic?: RuntimeTrafficState;
   defaultSort?: ProfileSort;
   isBatchOperating?: boolean;
   onTogglePin?: (p: Profile) => void;
@@ -26,13 +27,12 @@ interface ProfileListProps {
   onViewLogs: (p: Profile) => void;
   onDiagnose: (p: Profile) => void;
   onRepairCore: () => void;
-  onOpenCores?: () => void;
   onCreateNew: () => void;
 }
 
 export const ProfileList: React.FC<ProfileListProps> = ({
   profiles,
-  activeCore,
+  traffic,
   defaultSort = 'pinned_updated',
   isBatchOperating = false,
   onTogglePin,
@@ -47,7 +47,6 @@ export const ProfileList: React.FC<ProfileListProps> = ({
   onViewLogs,
   onDiagnose,
   onRepairCore,
-  onOpenCores,
   onCreateNew,
 }) => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -105,8 +104,7 @@ export const ProfileList: React.FC<ProfileListProps> = ({
       {/* 4 个大盘指标卡片与待处理连接 */}
       <ProfileMetricsCards
         profiles={sortedProfiles}
-        activeCore={activeCore}
-        onOpenCores={onOpenCores || onRepairCore}
+        traffic={traffic}
         onDiagnose={onDiagnose}
         onViewLogs={onViewLogs}
         onEdit={onEdit}

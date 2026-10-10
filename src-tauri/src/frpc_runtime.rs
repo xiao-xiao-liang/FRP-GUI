@@ -12,6 +12,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
+use crate::traffic_meter::{RuntimeTrafficSample, TrafficMonitor};
 
 pub const CONFIRM_WINDOW: Duration = Duration::from_millis(800);
 pub const CORE_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -77,6 +78,7 @@ pub struct ProcessCommandResult {
 pub trait RuntimeEventSink: Send + Sync {
     fn emit_state(&self, event: &FrpcRuntimeStateEvent);
     fn emit_log(&self, event: &FrpcRuntimeLogEvent);
+    fn emit_traffic(&self, event: &RuntimeTrafficSample);
 }
 
 pub struct TauriEventSink {
@@ -95,6 +97,9 @@ impl RuntimeEventSink for TauriEventSink {
     }
     fn emit_log(&self, event: &FrpcRuntimeLogEvent) {
         let _ = self.app.emit("frp-runtime-log", event);
+    }
+    fn emit_traffic(&self, event: &RuntimeTrafficSample) {
+        let _ = self.app.emit("frp-runtime-traffic", event);
     }
 }
 
@@ -264,6 +269,10 @@ static RE_AUTH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+|basic\s+)?[^\r\n,;]+").expect("合法Auth正则")
 });
 
+static RE_PROXY_URL_AUTH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)((?:socks5?|https?)://)[^\s/@]+@").expect("合法代理凭据正则")
+});
+
 static RE_QUOTED_SECRET: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)((?:token|password|secret_key)\s*[:=]\s*)(?:"[^"]*"|'[^']*')"#).expect("合法QuotedSecret正则")
 });
@@ -283,6 +292,8 @@ pub fn sanitize_runtime_text(text: &str) -> String {
     }
 
     let mut result = strip_ansi_escape_sequences(text);
+    // 临时计量代理的认证信息也必须从核心错误与日志中脱敏。
+    result = RE_PROXY_URL_AUTH.replace_all(&result, "${1}******@").to_string();
 
     // 1. 脱敏各类 PEM 私钥块
     result = RE_PEM.replace_all(&result, "******").to_string();
@@ -475,9 +486,97 @@ pub struct ProfileProcessHandle {
     pub stop_requested: AtomicBool,
     pub runtime_logs: Mutex<VecDeque<FrpcRuntimeLogEvent>>,
     pub next_log_sequence: AtomicU64,
+    start_guard: Mutex<()>,
+    traffic: Mutex<Option<RuntimeTrafficResources>>,
+}
+
+/// 临时计量配置只属于本次运行，停止或句柄释放后清理。
+struct RuntimeTrafficResources {
+    monitor: TrafficMonitor,
+    config_path: Option<PathBuf>,
+}
+
+impl RuntimeTrafficResources {
+    fn remove_config(&mut self) {
+        if let Some(path) = self.config_path.take() {
+            if let Err(error) = std::fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    log::warn!("清理临时流量计量配置失败");
+                }
+            }
+        }
+    }
+}
+
+impl Drop for RuntimeTrafficResources {
+    fn drop(&mut self) {
+        self.remove_config();
+    }
+}
+
+fn write_meter_runtime_config(base: &Path, run_id: &str, content: &str) -> Result<PathBuf, String> {
+    use std::io::Write;
+    let path = get_runtime_config_path(base, &format!("traffic_{run_id}"))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path).map_err(|_| ERR_WRITE_CONFIG_FAILED.to_string())?;
+    if file.write_all(content.as_bytes()).is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        return Err(ERR_WRITE_CONFIG_FAILED.to_string());
+    }
+    Ok(strip_windows_verbatim_prefix(&path))
 }
 
 impl ProfileProcessHandle {
+    async fn prepare_traffic(
+        &self,
+        base: &Path,
+        toml: &str,
+        original: &Path,
+        sink: Option<Arc<dyn RuntimeEventSink>>,
+    ) -> PathBuf {
+        self.finish_traffic().await;
+        let publish = Arc::new(move |sample: &RuntimeTrafficSample| {
+            if let Some(ref sink) = sink {
+                sink.emit_traffic(sample);
+            }
+        });
+        let mut monitor = TrafficMonitor::start(self.profile_id.clone(), toml, publish).await;
+        let mut config_path = None;
+        if let Some(content) = monitor.runtime_toml() {
+            match write_meter_runtime_config(base, &monitor.snapshot().run_id, content) {
+                Ok(path) => config_path = Some(path),
+                Err(_) => {
+                    monitor.disable("无法创建临时计量配置，当前连接未统计流量").await;
+                }
+            }
+        }
+        let effective_path = config_path.clone().unwrap_or_else(|| original.to_path_buf());
+        *self.traffic.lock().await = Some(RuntimeTrafficResources {
+            monitor,
+            config_path,
+        });
+        effective_path
+    }
+
+    async fn traffic_snapshot(&self) -> Option<RuntimeTrafficSample> {
+        self.traffic.lock().await.as_ref()
+            .map(|traffic| traffic.monitor.snapshot())
+    }
+
+    async fn finish_traffic(&self) {
+        if let Some(traffic) = self.traffic.lock().await.as_mut() {
+            traffic.monitor.shutdown().await;
+            traffic.remove_config();
+        }
+    }
+
     pub fn new(profile_id: String) -> Self {
         Self {
             profile_id,
@@ -491,6 +590,8 @@ impl ProfileProcessHandle {
             stop_requested: AtomicBool::new(false),
             runtime_logs: Mutex::new(VecDeque::new()),
             next_log_sequence: AtomicU64::new(0),
+            start_guard: Mutex::new(()),
+            traffic: Mutex::new(None),
         }
     }
 
@@ -560,6 +661,17 @@ pub struct FrpcRuntimeManager {
 }
 
 impl FrpcRuntimeManager {
+    pub async fn get_runtime_traffic(&self) -> Vec<RuntimeTrafficSample> {
+        let handles: Vec<_> = self.registry.lock().await.values().cloned().collect();
+        let mut samples = Vec::new();
+        for handle in handles {
+            if let Some(sample) = handle.traffic_snapshot().await {
+                samples.push(sample);
+            }
+        }
+        samples
+    }
+
     pub fn new(base_dir: PathBuf) -> Self {
         Self {
             registry: Mutex::new(HashMap::new()),
@@ -697,6 +809,32 @@ impl FrpcRuntimeManager {
             }
         };
 
+        // 同一连接的准备阶段也互斥，防止并发启动覆盖计量端口和临时配置。
+        let _start_guard = match handle.start_guard.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return ProcessCommandResult {
+                    accepted: false,
+                    pid: None,
+                    error: Some(ERR_ALREADY_RUNNING.to_string()),
+                    failure_kind: Some(FAILURE_STARTUP.to_string()),
+                };
+            }
+        };
+        if matches!(
+            handle.get_status().await.as_str(),
+            STATUS_STARTING | STATUS_RUNNING | STATUS_STOPPING
+        )
+            || handle.get_cmd_sender().await.is_some()
+        {
+            return ProcessCommandResult {
+                accepted: false,
+                pid: None,
+                error: Some(ERR_ALREADY_RUNNING.to_string()),
+                failure_kind: Some(FAILURE_STARTUP.to_string()),
+            };
+        }
+
         // 3. 校验核心程序
         let canonical_core = match validate_core_path(&core_path) {
             Ok(p) => p,
@@ -767,13 +905,17 @@ impl FrpcRuntimeManager {
             sink.emit_state(&starting_event);
         }
 
+        let config_path = handle.prepare_traffic(
+            &self.base_dir, &toml_content, &config_path, event_sink.clone(),
+        ).await;
+
         // 6. 构造命令并调用受控生命周期生成器
         let mut cmd = new_frpc_command(&canonical_core);
         cmd.arg("-c").arg(&config_path);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        self.spawn_and_confirm_child(handle, cmd, event_sink, profile_id)
+        self.spawn_and_confirm_child(handle.clone(), cmd, event_sink, profile_id)
             .await
     }
 
@@ -785,10 +927,12 @@ impl FrpcRuntimeManager {
         event_sink: Option<Arc<dyn RuntimeEventSink>>,
         _profile_id: String,
     ) -> ProcessCommandResult {
+        cmd.kill_on_drop(true);
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(_) => {
                 let err_msg = ERR_SPAWN_FAILED.to_string();
+                handle.finish_traffic().await;
                 handle
                     .update_state(STATUS_ERROR, None, Some(err_msg.clone()))
                     .await;
@@ -870,6 +1014,7 @@ impl FrpcRuntimeManager {
 
                 // 稍微让日志协程刷新捕获的早期错误输出（确保日志先于 error 状态进入通道）
                 tokio::time::sleep(Duration::from_millis(60)).await;
+                handle.finish_traffic().await;
 
                 handle
                     .update_state(STATUS_ERROR, None, Some(err_msg.clone()))
@@ -930,6 +1075,7 @@ impl FrpcRuntimeManager {
                 // 分支 A：子进程自身退出（意外退出或由于已接收到的终止信号最终退出）
                 exit_res = child.wait() => {
                     let _ = exit_res;
+                    handle.finish_traffic().await;
                     let was_stop_requested = handle.stop_requested.load(Ordering::SeqCst);
                     let current_status = handle.get_status().await;
 
@@ -964,6 +1110,7 @@ impl FrpcRuntimeManager {
                                     // 有限超时等待进程退出确认
                                     match timeout(STOP_CONFIRM_TIMEOUT, child.wait()).await {
                                         Ok(Ok(_)) => {
+                                            handle.finish_traffic().await;
                                             // 监控器确认进程已真正退出，落为 stopped 并释放控制权
                                             handle.update_state(STATUS_STOPPED, None, None).await;
                                             handle.set_cmd_sender(None).await;
@@ -1016,6 +1163,7 @@ impl FrpcRuntimeManager {
                             // 控制通道被关闭
                             let _ = child.kill().await;
                             let _ = child.wait().await;
+                            handle.finish_traffic().await;
                             break;
                         }
                     }
@@ -1173,11 +1321,11 @@ impl FrpcRuntimeManager {
         let mut join_set = tokio::task::JoinSet::new();
 
         for handle in handles {
-            let cmd_sender = handle.get_cmd_sender().await;
-
-            if let Some(tx) = cmd_sender {
+            join_set.spawn(async move {
+                // 启动准备也属于生命周期；等待其完成后再停止，避免遗留进程与计量端口。
+                let _start_guard = handle.start_guard.lock().await;
                 let p_id = handle.profile_id.clone();
-                join_set.spawn(async move {
+                if let Some(tx) = handle.get_cmd_sender().await {
                     let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
                     if tx
                         .send(ProcessControlCommand::Stop { responder: resp_tx })
@@ -1191,8 +1339,13 @@ impl FrpcRuntimeManager {
                     } else {
                         (p_id, false)
                     }
-                });
-            }
+                } else if handle.get_pid().await.is_none() {
+                    handle.finish_traffic().await;
+                    (p_id, true)
+                } else {
+                    (p_id, false)
+                }
+            });
         }
 
         let mut confirmed_stopped_ids = std::collections::HashSet::new();
@@ -1234,6 +1387,130 @@ impl FrpcRuntimeManager {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    fn traffic_test_directory() -> PathBuf {
+        std::env::temp_dir().join(format!("frp_traffic_runtime_{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn traffic_proxy_credentials_are_removed_from_runtime_errors() {
+        let safe = sanitize_runtime_text("proxy failed: socks5://temporary-user:temporary-password@127.0.0.1:12345");
+        assert!(!safe.contains("temporary-user"));
+        assert!(!safe.contains("temporary-password"));
+        assert!(safe.contains("127.0.0.1:12345"));
+    }
+
+    #[tokio::test]
+    async fn traffic_runtime_config_is_isolated_and_removed_after_exit() {
+        let base = traffic_test_directory();
+        let original = "serverAddr = '127.0.0.1'\nserverPort = 7000\n";
+        let original_path = write_runtime_config(&base, "profile", original).unwrap();
+        let handle = ProfileProcessHandle::new("profile".to_string());
+        let sink = Arc::new(InMemoryEventSink::new());
+        let path = handle.prepare_traffic(&base, original, &original_path, Some(sink.clone())).await;
+        assert_ne!(path, original_path);
+        assert_eq!(std::fs::read_to_string(&original_path).unwrap(), original);
+        let parsed: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert!(parsed["transport"]["proxyURL"].as_str().unwrap().starts_with("socks5://"));
+        assert_eq!(handle.traffic_snapshot().await.unwrap().availability, "collecting");
+        handle.finish_traffic().await;
+        assert!(!path.exists());
+        assert!(original_path.exists());
+        assert_eq!(handle.traffic_snapshot().await.unwrap().availability, "stopped");
+        let events = sink.traffic.lock().unwrap();
+        assert_eq!(events.first().unwrap().availability, "collecting");
+        assert_eq!(events.last().unwrap().availability, "stopped");
+        assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn traffic_unsupported_config_keeps_original_path() {
+        let base = traffic_test_directory();
+        let original = "serverAddr = '127.0.0.1'\nserverPort = 7000\n[transport]\nprotocol = 'quic'\n";
+        let original_path = write_runtime_config(&base, "profile", original).unwrap();
+        let handle = ProfileProcessHandle::new("profile".to_string());
+        let path = handle.prepare_traffic(&base, original, &original_path, None).await;
+        assert_eq!(path, original_path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(handle.traffic_snapshot().await.unwrap().availability, "unavailable");
+        handle.finish_traffic().await;
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn traffic_resources_are_cleaned_on_spawn_failure() {
+        let base = traffic_test_directory();
+        let original = "serverAddr = '127.0.0.1'\nserverPort = 7000\n";
+        let original_path = write_runtime_config(&base, "profile", original).unwrap();
+        let handle = Arc::new(ProfileProcessHandle::new("profile".to_string()));
+        let path = handle.prepare_traffic(&base, original, &original_path, None).await;
+        let manager = FrpcRuntimeManager::new(base.clone());
+        let result = manager.spawn_and_confirm_child(handle.clone(), Command::new(base.join("missing-core")), None, "profile".to_string()).await;
+        assert!(!result.accepted);
+        assert!(!path.exists());
+        assert_eq!(handle.traffic_snapshot().await.unwrap().availability, "stopped");
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn traffic_resources_survive_running_and_are_cleaned_on_confirmed_stop() {
+        let base = traffic_test_directory();
+        let original = "serverAddr = '127.0.0.1'\nserverPort = 7000\n";
+        let original_path = write_runtime_config(&base, "profile", original).unwrap();
+        let handle = Arc::new(ProfileProcessHandle::new("profile".to_string()));
+        let path = handle.prepare_traffic(&base, original, &original_path, None).await;
+        #[cfg(target_os = "windows")]
+        let mut command = Command::new("cmd.exe");
+        #[cfg(target_os = "windows")]
+        command.args(["/c", "ping -n 10 127.0.0.1 > nul"]);
+        #[cfg(not(target_os = "windows"))]
+        let mut command = Command::new("sleep");
+        #[cfg(not(target_os = "windows"))]
+        command.arg("10");
+        let manager = FrpcRuntimeManager::new(base.clone());
+        manager.registry.lock().await.insert("profile".to_string(), handle.clone());
+        assert!(manager.spawn_and_confirm_child(handle.clone(), command, None, "profile".to_string()).await.accepted);
+        assert!(path.exists());
+        let samples = manager.get_runtime_traffic().await;
+        assert_eq!(samples.len(), 1);
+        assert_ne!(samples[0].availability, "stopped");
+        assert!(manager.stop_profile(None, "profile".to_string()).await.accepted);
+        assert!(!path.exists());
+        assert_eq!(handle.traffic_snapshot().await.unwrap().availability, "stopped");
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn traffic_config_write_failure_preserves_connection_and_reports_unavailable() {
+        let base = traffic_test_directory();
+        let original = "serverAddr = '127.0.0.1'\nserverPort = 7000\n";
+        let original_path = write_runtime_config(&base, "profile", original).unwrap();
+        let invalid_base = base.join("not_a_directory");
+        std::fs::write(&invalid_base, "file").unwrap();
+        let handle = ProfileProcessHandle::new("profile".to_string());
+        let path = handle.prepare_traffic(&invalid_base, original, &original_path, None).await;
+        assert_eq!(path, original_path);
+        assert_eq!(handle.traffic_snapshot().await.unwrap().availability, "unavailable");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        handle.finish_traffic().await;
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn traffic_shutdown_waits_for_start_preparation_before_stopping_child() {
+        let manager = Arc::new(FrpcRuntimeManager::new(traffic_test_directory()));
+        let handle = Arc::new(ProfileProcessHandle::new("starting".to_string()));
+        let preparation = handle.start_guard.lock().await;
+        handle.update_state(STATUS_STARTING, None, None).await;
+        manager.registry.lock().await.insert("starting".to_string(), handle.clone());
+        let shutting_down = manager.clone();
+        let shutdown_task = tokio::spawn(async move { shutting_down.shutdown_all().await; });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!shutdown_task.is_finished(), "关闭必须等待本次启动完成准备");
+        drop(preparation);
+        timeout(Duration::from_secs(2), shutdown_task).await.unwrap().unwrap();
+    }
 
     #[test]
     fn standard_frpc_log_line_uses_native_timestamp_level_and_message() {
@@ -1284,6 +1561,7 @@ pub mod tests {
     pub struct InMemoryEventSink {
         pub states: Arc<Mutex<Vec<FrpcRuntimeStateEvent>>>,
         pub logs: Arc<Mutex<Vec<FrpcRuntimeLogEvent>>>,
+        pub traffic: Arc<std::sync::Mutex<Vec<RuntimeTrafficSample>>>,
     }
 
     impl InMemoryEventSink {
@@ -1291,6 +1569,7 @@ pub mod tests {
             Self {
                 states: Arc::new(Mutex::new(Vec::new())),
                 logs: Arc::new(Mutex::new(Vec::new())),
+                traffic: Arc::new(std::sync::Mutex::new(Vec::new())),
             }
         }
     }
@@ -1309,6 +1588,9 @@ pub mod tests {
             tokio::spawn(async move {
                 logs.lock().await.push(ev);
             });
+        }
+        fn emit_traffic(&self, event: &RuntimeTrafficSample) {
+            self.traffic.lock().unwrap().push(event.clone());
         }
     }
 

@@ -150,7 +150,7 @@ describe('ProfileList (我的连接表格化呈现)', () => {
       // 存在固定 4 个文本表头（选择列为 checkbox）
       expect(screen.getByText('连接名称')).toBeInTheDocument();
       expect(screen.queryByText('连接描述')).not.toBeInTheDocument();
-      expect(screen.getByText('穿透规则')).toBeInTheDocument();
+      expect(screen.getByRole('columnheader', { name: '穿透规则' })).toBeInTheDocument();
       expect(screen.getByText('上次启动')).toBeInTheDocument();
       expect(screen.getByText('操作')).toBeInTheDocument();
 
@@ -240,7 +240,7 @@ describe('ProfileList (我的连接表格化呈现)', () => {
       expect(screen.getByText(expectedTimeStr)).toBeInTheDocument();
 
       // p3 没有 startTime，显示 —
-      expect(screen.getByText('—')).toBeInTheDocument();
+      expect(within(screen.getByRole('table')).getByText('—')).toBeInTheDocument();
     });
   });
 
@@ -541,7 +541,7 @@ describe('ProfileList (我的连接表格化呈现)', () => {
   });
 
   describe('顶部 4 个大盘指标卡片与异常引导', () => {
-    it('在页面顶部渲染运行实例、在线穿透隧道、需要处理、FRP 核心引擎 4 个指标卡片', () => {
+    it('在页面顶部渲染运行实例、穿透规则、需要处理和实时流量 4 个指标卡片', () => {
       render(
         <ProfileList
           profiles={mockProfiles}
@@ -558,9 +558,9 @@ describe('ProfileList (我的连接表格化呈现)', () => {
       );
 
       expect(screen.getByText('运行实例')).toBeInTheDocument();
-      expect(screen.getByText('在线穿透隧道')).toBeInTheDocument();
+      expect(screen.getByText('已配置')).toBeInTheDocument();
       expect(screen.getByText('需要处理')).toBeInTheDocument();
-      expect(screen.getByText('FRP 核心引擎')).toBeInTheDocument();
+      expect(screen.getByRole('region', { name: '实时流量' })).toBeInTheDocument();
     });
   });
 });

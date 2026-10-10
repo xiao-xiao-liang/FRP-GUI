@@ -3,6 +3,7 @@ import {
   startProfileInstance,
   stopProfileInstance,
   getRuntimeLogs,
+  getRuntimeTraffic,
   subscribeLogs,
   subscribeRuntimeEvents,
   testServerConnectivity,
@@ -28,15 +29,16 @@ import {
   computeCoreTomlPath,
   saveProfileTomlToCore,
 } from './ipc';
-import { FrpCore, Profile } from '../types/frp';
+import { FrpCore, Profile, RuntimeTrafficSample } from '../types/frp';
 
 // Mock @tauri-apps/api/event
 const eventHandlers = new Map<string, (event: { event: string; id: number; payload: any }) => void>();
 const mockUnlistenLog = vi.fn();
 const mockUnlistenState = vi.fn();
+const mockUnlistenTraffic = vi.fn();
 const mockTauriListen = vi.fn((eventName: string, handler: any) => {
   eventHandlers.set(eventName, handler);
-  return Promise.resolve(eventName === 'frp-runtime-log' ? mockUnlistenLog : mockUnlistenState);
+  return Promise.resolve(eventName === 'frp-runtime-log' ? mockUnlistenLog : eventName === 'frp-runtime-state' ? mockUnlistenState : mockUnlistenTraffic);
 });
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -112,7 +114,7 @@ describe('IPC Runtime Contract and Event Bridge', () => {
     _resetRuntimeEventBridgeForTest();
     mockTauriListen.mockImplementation((eventName: string, handler: any) => {
       eventHandlers.set(eventName, handler);
-      return Promise.resolve(eventName === 'frp-runtime-log' ? mockUnlistenLog : mockUnlistenState);
+      return Promise.resolve(eventName === 'frp-runtime-log' ? mockUnlistenLog : eventName === 'frp-runtime-state' ? mockUnlistenState : mockUnlistenTraffic);
     });
     delete (window as any).__TAURI__;
     delete (window as any).__TAURI_INTERNALS__;
@@ -264,6 +266,37 @@ describe('IPC Runtime Contract and Event Bridge', () => {
     const logs = await getRuntimeLogs('profile_1');
     expect(invoke).toHaveBeenCalledWith('get_runtime_logs', { profileId: 'profile_1' });
     expect(logs).toEqual([{ sequence: 1, profileId: 'profile_1', timestamp: '2026-09-04 16:18:19', level: 'info', message: 'login success' }]);
+  });
+
+  it('流量事件与快照严格校验字段并脱敏原因，浏览器无模拟流量', async () => {
+    (window as any).__MOCK_TAURI_ENV__ = false;
+    expect(await getRuntimeTraffic()).toEqual([]);
+    (window as any).__MOCK_TAURI_ENV__ = true;
+    const valid: RuntimeTrafficSample = {
+      profileId: 'profile_1', runId: 'run-1', startedAt: 1_000, sequence: 1, timestamp: 2_000,
+      availability: 'unavailable', uploadBytesPerSecond: 0, downloadBytesPerSecond: 0,
+      reason: '\u001b[31mpassword = private-password\u001b[0m',
+    };
+    const invalid = [
+      { ...valid, profileId: '' }, { ...valid, runId: '' }, { ...valid, startedAt: NaN },
+      { ...valid, startedAt: -1 }, { ...valid, sequence: 0 }, { ...valid, sequence: 1.5 },
+      { ...valid, timestamp: Infinity }, { ...valid, timestamp: -1 }, { ...valid, availability: 'unknown' },
+      { ...valid, uploadBytesPerSecond: -1 }, { ...valid, downloadBytesPerSecond: Infinity }, { ...valid, reason: 123 },
+    ];
+    const invoke = vi.fn().mockResolvedValue([valid, ...invalid]);
+    (window as any).__TAURI__ = { core: { invoke } };
+    const onTraffic = vi.fn();
+    const unsubscribe = await subscribeRuntimeEvents(undefined, undefined, onTraffic);
+    const emit = (payload: unknown) => eventHandlers.get('frp-runtime-traffic')?.({ event: 'frp-runtime-traffic', id: 3, payload });
+    invalid.forEach(emit);
+    expect(onTraffic).not.toHaveBeenCalled();
+    emit({ ...valid, token: 'must-be-dropped' });
+    expect(onTraffic).toHaveBeenCalledWith({ ...valid, reason: 'password = ******' });
+    expect(await getRuntimeTraffic()).toEqual([{ ...valid, reason: 'password = ******' }]);
+    expect(invoke).toHaveBeenCalledWith('get_runtime_traffic');
+    await unsubscribe();
+    emit(valid);
+    expect(onTraffic).toHaveBeenCalledTimes(1);
   });
 
   it('运行期事件与日志快照均剥离 ANSI 颜色控制符', async () => {
@@ -553,9 +586,10 @@ describe('IPC Runtime Contract and Event Bridge', () => {
 
     const unlistenLog = vi.fn();
     const unlistenState = vi.fn();
+    const unlistenTraffic = vi.fn();
     mockTauriListen.mockImplementation((eventName: string, handler: any) => {
       eventHandlers.set(eventName, handler);
-      return Promise.resolve(eventName === 'frp-runtime-log' ? unlistenLog : unlistenState);
+      return Promise.resolve(eventName === 'frp-runtime-log' ? unlistenLog : eventName === 'frp-runtime-state' ? unlistenState : unlistenTraffic);
     });
 
     const logListenerA = vi.fn();
@@ -566,8 +600,8 @@ describe('IPC Runtime Contract and Event Bridge', () => {
     const unsubA = await subscribeRuntimeEvents(logListenerA, stateListenerA);
     const unsubB = await subscribeRuntimeEvents(logListenerB, stateListenerB);
 
-    // 两次订阅后，mockTauriListen 总调用次数严格为 2（log 和 state 各 1 次）
-    expect(mockTauriListen).toHaveBeenCalledTimes(2);
+    // 多位订阅者共用日志、状态和流量三个原生监听器。
+    expect(mockTauriListen).toHaveBeenCalledTimes(3);
 
     // 两位订阅者均收到事件
     emitRuntimeLog({ sequence: 1, profileId: 'p1', level: 'info', message: 'hello', timestamp: '12:00:00' });
@@ -582,6 +616,7 @@ describe('IPC Runtime Contract and Event Bridge', () => {
     await unsubA();
     expect(unlistenLog).not.toHaveBeenCalled();
     expect(unlistenState).not.toHaveBeenCalled();
+    expect(unlistenTraffic).not.toHaveBeenCalled();
 
     // B 仍能收到后续事件，而 A 不再收到
     emitRuntimeLog({ sequence: 2, profileId: 'p1', level: 'info', message: 'second event', timestamp: '12:00:01' });
@@ -592,6 +627,40 @@ describe('IPC Runtime Contract and Event Bridge', () => {
     await unsubB();
     expect(unlistenLog).toHaveBeenCalledTimes(1);
     expect(unlistenState).toHaveBeenCalledTimes(1);
+    expect(unlistenTraffic).toHaveBeenCalledTimes(1);
+  });
+
+  it('流量监听注册失败时撤销已注册监听并报告失败，重试不保留失效订阅者', async () => {
+    (window as any).__MOCK_TAURI_ENV__ = true;
+    const registrationError = new Error('traffic listener failed');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockTauriListen.mockImplementation((eventName: string, handler: any) => {
+      eventHandlers.set(eventName, handler);
+      return eventName === 'frp-runtime-traffic' ? Promise.reject(registrationError)
+        : Promise.resolve(eventName === 'frp-runtime-log' ? mockUnlistenLog : mockUnlistenState);
+    });
+    const failedSubscriber = vi.fn();
+    try {
+      await expect(subscribeRuntimeEvents(failedSubscriber)).rejects.toBe(registrationError);
+      expect(mockUnlistenLog).toHaveBeenCalledTimes(1);
+      expect(mockUnlistenState).toHaveBeenCalledTimes(1);
+      mockTauriListen.mockImplementation((eventName: string, handler: any) => {
+        eventHandlers.set(eventName, handler);
+        return Promise.resolve(eventName === 'frp-runtime-log' ? mockUnlistenLog : eventName === 'frp-runtime-state' ? mockUnlistenState : mockUnlistenTraffic);
+      });
+      const subscriber = vi.fn();
+      const unsubscribe = await subscribeRuntimeEvents(subscriber);
+      emitRuntimeLog({ sequence: 1, profileId: 'p1', level: 'info', message: 'connected', timestamp: 't' });
+      expect(subscriber).toHaveBeenCalledTimes(1);
+      expect(failedSubscriber).not.toHaveBeenCalled();
+      expect(mockTauriListen).toHaveBeenCalledTimes(6);
+      await unsubscribe();
+      expect(mockUnlistenLog).toHaveBeenCalledTimes(2);
+      expect(mockUnlistenState).toHaveBeenCalledTimes(2);
+      expect(mockUnlistenTraffic).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it('纵深防御：对日志 message 和状态 errorMessage 进行安全脱敏与 4 KiB 截断，LogEntry.raw 仅基于已脱敏内容', async () => {

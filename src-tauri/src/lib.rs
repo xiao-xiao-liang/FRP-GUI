@@ -14,6 +14,7 @@ pub mod credential_store;
 pub mod server_preflight;
 pub mod frps_deployment;
 pub mod frpc_runtime;
+pub mod traffic_meter;
 pub mod app_lifecycle;
 pub mod core_import;
 pub mod core_download;
@@ -356,6 +357,13 @@ async fn get_runtime_states(
     state: State<'_, AppState>,
 ) -> Result<Vec<frpc_runtime::FrpcRuntimeStateEvent>, String> {
     Ok(state.frpc_manager.get_runtime_states().await)
+}
+
+#[tauri::command]
+async fn get_runtime_traffic(
+    state: State<'_, AppState>,
+) -> Result<Vec<traffic_meter::RuntimeTrafficSample>, String> {
+    Ok(state.frpc_manager.get_runtime_traffic().await)
 }
 
 #[tauri::command]
@@ -868,6 +876,7 @@ pub fn run() {
             save_profile_toml_to_core,
             stop_profile,
             get_runtime_states,
+            get_runtime_traffic,
             get_runtime_logs,
             update_app_settings,
             hide_main_window,

@@ -109,6 +109,21 @@ export interface FrpcRuntimeLogEvent {
   message: string;
 }
 
+export type RuntimeTrafficAvailability = 'collecting' | 'available' | 'unavailable' | 'stopped';
+
+/** 当前启动周期的独立流量样本，仅保存在运行期内存中。 */
+export interface RuntimeTrafficSample {
+  profileId: string;
+  runId: string;
+  startedAt: number;
+  sequence: number;
+  timestamp: number;
+  availability: RuntimeTrafficAvailability;
+  uploadBytesPerSecond: number;
+  downloadBytesPerSecond: number;
+  reason?: string | null;
+}
+
 export type FrpcFailureKind = 'core_invalid' | 'startup' | 'early_exit';
 
 export interface ProcessCommandResult {

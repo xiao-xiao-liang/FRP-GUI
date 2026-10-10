@@ -1,16 +1,17 @@
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi, describe, it, expect, afterEach } from 'vitest';
 import React from 'react';
 import { ProfileMetricsCards } from './ProfileMetricsCards';
-import { makeProfile, makeCore } from '../../test/fixtures';
+import { makeProfile } from '../../test/fixtures';
+import { mergeRuntimeTraffic } from '../../services/runtime-traffic';
 
 afterEach(() => {
   cleanup();
 });
 
 describe('ProfileMetricsCards', () => {
-  it('渲染 4 个指标卡片：运行实例、在线穿透隧道、需要处理、FRP 核心引擎', () => {
+  it('渲染运行实例、配置规则、需要处理和实时流量，停止连接规则仍计入总数', () => {
     const runningProfile = makeProfile({
       id: 'p1',
       name: '运行方案',
@@ -40,17 +41,9 @@ describe('ProfileMetricsCards', () => {
       },
     });
 
-    const core = makeCore({
-      version: 'v0.61.1',
-      path: 'C:\\tools\\frpc.exe',
-      status: 'ready',
-    });
-
     render(
       <ProfileMetricsCards
         profiles={[runningProfile, stoppedProfile]}
-        activeCore={core}
-        onOpenCores={vi.fn()}
       />
     );
 
@@ -59,20 +52,19 @@ describe('ProfileMetricsCards', () => {
     expect(screen.getAllByText(/\/ 2 方案/)).toHaveLength(2);
     expect(screen.getByText('1 运行中')).toBeInTheDocument();
 
-    // 在线穿透隧道 (运行方案有 2 条规则，共 3 条规则)
-    expect(screen.getByText('在线穿透隧道')).toBeInTheDocument();
-    expect(screen.getByText(/\/ 3 规则/)).toBeInTheDocument();
-    expect(screen.getByText('正常工作')).toBeInTheDocument();
+    // 规则数量只表示配置，不推断隧道在线状态。
+    expect(screen.getByText('穿透规则').parentElement).toHaveTextContent('3条');
+    expect(screen.getByText('已配置')).toBeInTheDocument();
+    expect(screen.queryByText('在线穿透隧道')).not.toBeInTheDocument();
+    expect(screen.queryByText('正常工作')).not.toBeInTheDocument();
 
     // 需要处理
     expect(screen.getByText('需要处理')).toBeInTheDocument();
     expect(screen.getByText('全部正常')).toBeInTheDocument();
 
-    // FRP 核心引擎
-    expect(screen.getByText('FRP 核心引擎')).toBeInTheDocument();
-    expect(screen.getByText('v0.61.1')).toBeInTheDocument();
-    expect(screen.getByText('就绪')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '切换核心' })).toBeInTheDocument();
+    expect(screen.getByText('实时流量')).toBeInTheDocument();
+    expect(screen.getByText('等待流量样本')).toBeInTheDocument();
+    expect(screen.queryByText('FRP 核心引擎')).not.toBeInTheDocument();
   });
 
   it('逐项显示异常原因与建议，并将编辑和诊断操作交给对应连接', async () => {
@@ -225,23 +217,39 @@ describe('ProfileMetricsCards', () => {
     expect(screen.queryByRole('region', { name: '待处理连接' })).not.toBeInTheDocument();
   });
 
-  it('未配置核心时展示未配置和配置核心按钮', async () => {
-    const user = userEvent.setup();
-    const onOpenCores = vi.fn();
+  it('没有运行连接时显示双向零速率和未运行', () => {
+    render(<ProfileMetricsCards profiles={[]} />);
+    const traffic = screen.getByRole('region', { name: '实时流量' });
+    expect(within(traffic).getByText('↑ 0 B/s')).toBeInTheDocument();
+    expect(within(traffic).getByText('↓ 0 B/s')).toBeInTheDocument();
+    expect(within(traffic).getByText('未运行')).toBeInTheDocument();
+  });
 
-    render(
-      <ProfileMetricsCards
-        profiles={[]}
-        activeCore={null}
-        onOpenCores={onOpenCores}
-      />
-    );
+  it('部分连接采集成功时展示合计和覆盖连接数', () => {
+    const traffic = mergeRuntimeTraffic({}, [{
+      profileId: 'p1', runId: 'run-1', startedAt: Date.now() - 1_000, sequence: 2, timestamp: Date.now(),
+      availability: 'available', uploadBytesPerSecond: 1_500, downloadBytesPerSecond: 1_000_000,
+    }]);
+    render(<ProfileMetricsCards profiles={[makeProfile({ id: 'p1', status: 'running' }), makeProfile({ id: 'p2', status: 'running' })]} traffic={traffic} />);
+    expect(screen.getByText('↑ 1.5 KB/s')).toBeInTheDocument();
+    expect(screen.getByText('↓ 1 MB/s')).toBeInTheDocument();
+    expect(screen.getByText('已统计 1 / 2 个运行连接')).toBeInTheDocument();
+  });
 
-    expect(screen.getByText('未配置')).toBeInTheDocument();
-    expect(screen.getByText('待配置')).toBeInTheDocument();
-
-    const configBtn = screen.getByRole('button', { name: '配置核心' });
-    await user.click(configBtn);
-    expect(onOpenCores).toHaveBeenCalledTimes(1);
+  it('每秒检查样本时效，过期后显示不可用而非零流量', async () => {
+    vi.useFakeTimers();
+    try {
+      const traffic = mergeRuntimeTraffic({}, [{
+        profileId: 'p1', runId: 'run-1', startedAt: Date.now() - 1_000, sequence: 2, timestamp: Date.now(),
+        availability: 'available', uploadBytesPerSecond: 1_500, downloadBytesPerSecond: 0,
+      }]);
+      render(<ProfileMetricsCards profiles={[makeProfile({ id: 'p1', status: 'running' })]} traffic={traffic} />);
+      expect(screen.getByText('↑ 1.5 KB/s')).toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+      expect(screen.getByText('流量采样已过期')).toBeInTheDocument();
+      expect(screen.queryByText('↑ 0 B/s')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
