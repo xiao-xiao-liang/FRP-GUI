@@ -557,7 +557,7 @@ export function AppLayout() {
           nextLastFailureKind = undefined;
           nextLastWarning = undefined;
         } else if (event.status === 'error') {
-          nextPid = undefined;
+          nextPid = event.pid;
           // 异常时完整保留上次启动时间，绝不清空为 undefined
           nextStartTime = profile.stats.startTime;
           nextLastError = errorMessage;
@@ -711,7 +711,8 @@ export function AppLayout() {
       return;
     }
 
-    const willRun = p.status !== 'running' && p.status !== 'starting';
+    const willRun = p.status !== 'running' && p.status !== 'starting'
+      && !(p.status === 'error' && p.stats.pid);
 
     if (willRun) {
       const profileCore = cores.find((core) => core.id === p.coreId && core.path && core.status !== 'not_downloaded');
@@ -1039,7 +1040,7 @@ export function AppLayout() {
     }
     const targetResult = getBatchActionTargets(targets, 'start');
     if (!targetResult.canExecute) {
-      feishuToast.warning(targetResult.reason || '仅当所有选中连接均已停止时可批量启动');
+      feishuToast.warning(targetResult.reason || '仅当所有选中连接均未运行且进程已退出时可批量启动');
       return;
     }
 
@@ -1095,7 +1096,7 @@ export function AppLayout() {
     }
     const targetResult = getBatchActionTargets(targets, 'delete');
     if (!targetResult.canExecute) {
-      feishuToast.warning(targetResult.reason || '仅当所有选中连接均已停止时可批量删除');
+      feishuToast.warning(targetResult.reason || '仅当所有选中连接均未运行且进程已退出时可批量删除');
       return;
     }
 

@@ -372,24 +372,29 @@ describe('profile-organization pure functions', () => {
       }
     });
 
-    it('所有选中项均为 stopped 时，仅 start 和 delete 可执行，stop 不可执行并给出中文原因', () => {
-      const selected = [pStopped, makeProfile({ id: 'p-stopped-2', status: 'stopped' })];
+    it('所有选中项均已停止或失败且无进程时，仅 start 和 delete 可执行', () => {
+      for (const selected of [
+        [pStopped, makeProfile({ id: 'p-stopped-2', status: 'stopped' })],
+        [pStopped, pError],
+        [pError],
+      ]) {
 
-      const startRes = getBatchActionTargets(selected, 'start');
-      expect(startRes.canExecute).toBe(true);
-      expect(startRes.executable.map(p => p.id)).toEqual(['p-stopped', 'p-stopped-2']);
-      expect(startRes.skipped).toEqual([]);
+        const startRes = getBatchActionTargets(selected, 'start');
+        expect(startRes.canExecute).toBe(true);
+        expect(startRes.executable).toEqual(selected);
+        expect(startRes.skipped).toEqual([]);
 
-      const deleteRes = getBatchActionTargets(selected, 'delete');
-      expect(deleteRes.canExecute).toBe(true);
-      expect(deleteRes.executable.map(p => p.id)).toEqual(['p-stopped', 'p-stopped-2']);
-      expect(deleteRes.skipped).toEqual([]);
+        const deleteRes = getBatchActionTargets(selected, 'delete');
+        expect(deleteRes.canExecute).toBe(true);
+        expect(deleteRes.executable).toEqual(selected);
+        expect(deleteRes.skipped).toEqual([]);
 
-      const stopRes = getBatchActionTargets(selected, 'stop');
-      expect(stopRes.canExecute).toBe(false);
-      expect(stopRes.executable).toEqual([]);
-      expect(stopRes.skipped).toEqual(selected);
-      expect(stopRes.reason).toMatch(/仅当所有选中连接均在运行/);
+        const stopRes = getBatchActionTargets(selected, 'stop');
+        expect(stopRes.canExecute).toBe(false);
+        expect(stopRes.executable).toEqual([]);
+        expect(stopRes.skipped).toEqual(selected);
+        expect(stopRes.reason).toMatch(/仅当所有选中连接均在运行/);
+      }
     });
 
     it('所有选中项均为 running 时，仅 stop 可执行，start 和 delete 不可执行并给出中文原因', () => {
@@ -404,13 +409,13 @@ describe('profile-organization pure functions', () => {
       expect(startRes.canExecute).toBe(false);
       expect(startRes.executable).toEqual([]);
       expect(startRes.skipped).toEqual(selected);
-      expect(startRes.reason).toMatch(/仅当所有选中连接均已停止/);
+      expect(startRes.reason).toMatch(/仅当所有选中连接均未运行/);
 
       const deleteRes = getBatchActionTargets(selected, 'delete');
       expect(deleteRes.canExecute).toBe(false);
       expect(deleteRes.executable).toEqual([]);
       expect(deleteRes.skipped).toEqual(selected);
-      expect(deleteRes.reason).toMatch(/仅当所有选中连接均已停止/);
+      expect(deleteRes.reason).toMatch(/仅当所有选中连接均未运行/);
     });
 
     it('混合 stopped 与 running 时，三个操作均返回不可执行和中文原因', () => {
@@ -420,7 +425,7 @@ describe('profile-organization pure functions', () => {
       expect(startRes.canExecute).toBe(false);
       expect(startRes.executable).toEqual([]);
       expect(startRes.skipped).toEqual(selected);
-      expect(startRes.reason).toMatch(/仅当所有选中连接均已停止/);
+      expect(startRes.reason).toMatch(/仅当所有选中连接均未运行/);
 
       const stopRes = getBatchActionTargets(selected, 'stop');
       expect(stopRes.canExecute).toBe(false);
@@ -432,12 +437,13 @@ describe('profile-organization pure functions', () => {
       expect(deleteRes.canExecute).toBe(false);
       expect(deleteRes.executable).toEqual([]);
       expect(deleteRes.skipped).toEqual(selected);
-      expect(deleteRes.reason).toMatch(/仅当所有选中连接均已停止/);
+      expect(deleteRes.reason).toMatch(/仅当所有选中连接均未运行/);
     });
 
-    it('包含 error、starting 或 stopping 时，三个操作均返回不可执行和中文原因', () => {
+    it('包含仍有进程的异常连接、starting 或 stopping 时，三个操作均不可执行', () => {
       const cases = [
-        [pStopped, pError],
+        [pStopped, { ...pError, stats: { ...pError.stats, pid: 123 } }],
+        [pStopped, { ...pStopped, id: 'p-stopped-with-pid', stats: { ...pStopped.stats, pid: 123 } }],
         [pRunning, pStarting],
         [pStopped, pStopping],
       ];

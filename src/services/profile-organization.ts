@@ -257,8 +257,10 @@ export function getBatchActionTargets(
   }
 
   if (action === 'start') {
-    const isAllStopped = selectedProfiles.every(p => p.status === 'stopped');
-    if (isAllStopped) {
+    const isAllInactive = selectedProfiles.every(p =>
+      (p.status === 'stopped' || p.status === 'error') && !p.stats?.pid
+    );
+    if (isAllInactive) {
       return {
         executable: selectedProfiles,
         skipped: [],
@@ -269,7 +271,7 @@ export function getBatchActionTargets(
       executable: [],
       skipped: selectedProfiles,
       canExecute: false,
-      reason: '仅当所有选中连接均已停止时可批量启动',
+      reason: '仅当所有选中连接均未运行且进程已退出时可批量启动',
     };
   }
 
@@ -291,8 +293,10 @@ export function getBatchActionTargets(
   }
 
   if (action === 'delete') {
-    const isAllStopped = selectedProfiles.every(p => p.status === 'stopped');
-    if (isAllStopped) {
+    const isAllInactive = selectedProfiles.every(p =>
+      (p.status === 'stopped' || p.status === 'error') && !p.stats?.pid
+    );
+    if (isAllInactive) {
       return {
         executable: selectedProfiles,
         skipped: [],
@@ -303,7 +307,7 @@ export function getBatchActionTargets(
       executable: [],
       skipped: selectedProfiles,
       canExecute: false,
-      reason: '仅当所有选中连接均已停止时可批量删除',
+      reason: '仅当所有选中连接均未运行且进程已退出时可批量删除',
     };
   }
 

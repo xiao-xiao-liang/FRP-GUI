@@ -308,7 +308,8 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                 const isSelected = selectedRowKeys.includes(record.id);
                 const isStarting = record.status === 'starting';
                 const isStopping = record.status === 'stopping';
-                const isRunning = record.status === 'running';
+                const isRunning = record.status === 'running'
+                  || (record.status === 'error' && Boolean(record.stats.pid));
 
                 // 穿透规则提取
                 const proxies = (record.config as any)?.proxies || [];
