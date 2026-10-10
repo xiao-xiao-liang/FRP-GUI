@@ -102,12 +102,15 @@ export const ProfileList: React.FC<ProfileListProps> = ({
         </div>
       </div>
 
-      {/* 4 个大盘指标卡片与异常横幅 */}
+      {/* 4 个大盘指标卡片与待处理连接 */}
       <ProfileMetricsCards
         profiles={sortedProfiles}
         activeCore={activeCore}
         onOpenCores={onOpenCores || onRepairCore}
         onDiagnose={onDiagnose}
+        onViewLogs={onViewLogs}
+        onEdit={onEdit}
+        onRepairCore={onRepairCore}
       />
 
       {/* 专用连接表格 */}

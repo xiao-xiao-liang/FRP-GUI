@@ -3,10 +3,11 @@ import { BrowserRouter, Routes, Route, useNavigate, useLocation, useSearchParams
 import { listen } from '@tauri-apps/api/event';
 import { DiagnosticResult, FrpCore, FrpServerNode, Profile, ProfileGroup, FrpcRuntimeStateEvent, FrpcFailureKind, FrpcRuntimeLogEvent, LogEntry } from './types/frp';
 import { DEFAULT_FRPC_CONFIG, DEFAULT_FRPS_CONFIG, serializeFrpcToml, serializeFrpsToml } from './services/toml-sync';
-import { startProfileInstance, stopProfileInstance, isTauriEnv, getRuntimeStates, getRuntimeLogs, subscribeRuntimeEvents, storeProfileSecret, loadProfileSecret, deleteProfileSecret, saveProfileTomlToCore } from './services/ipc';
+import { startProfileInstance, stopProfileInstance, isTauriEnv, getRuntimeStates, getRuntimeLogs, subscribeRuntimeEvents, storeProfileSecret, loadProfileSecret, deleteProfileSecret, saveProfileTomlToCore, sanitizeRuntimeText } from './services/ipc';
 import { syncAppSettings, exitDesktopApp, hideMainWindow } from './services/ipc';
 import { parseProfileSecret, profileCredentialReference, sanitizeProfileForStorage, serializeProfileSecret } from './services/profile-secrets';
 import { AppSettings, loadAppSettings, saveAppSettings } from './services/app-settings';
+import { getProfileIssue, selectProfileFailureMessage } from './services/profile-issues';
 import {
   loadProfileGroups,
   saveProfileGroups,
@@ -474,15 +475,63 @@ export function AppLayout() {
 
   // 维护每个 profile 收到的最新事件时间戳（防止旧快照或旧事件乱序覆盖）
   const latestEventTimestampsRef = useRef<Map<string, number>>(new Map());
+  const latestRuntimeStatesRef = useRef<Map<string, FrpcRuntimeStateEvent>>(new Map());
+  const profilesRef = useRef(profiles);
+  profilesRef.current = profiles;
+  const [runtimeLogs, setRuntimeLogs] = useState<LogEntry[]>([]);
+  const runtimeLogsRef = useRef<LogEntry[]>([]);
+  const pendingStartsRef = useRef<Set<string>>(new Set());
+  const startAttemptTimesRef = useRef<Map<string, number>>(new Map());
+  const latestIssueSequencesRef = useRef<Map<string, number>>(new Map());
+  const reportedIssuesRef = useRef<Map<string, string>>(new Map());
+  const failureFallbacksRef = useRef<Map<string, string>>(new Map());
+
+  const resolveFailureMessage = useCallback((profileId: string, fallback: string) => {
+    const startedAt = startAttemptTimesRef.current.get(profileId) ?? 0;
+    const logs = runtimeLogsRef.current.filter((entry) =>
+      entry.profileId === profileId && Date.parse(entry.timestamp) >= startedAt
+    );
+    return selectProfileFailureMessage(sanitizeRuntimeText(fallback), logs);
+  }, []);
+
+  // 同一次启动的事件与命令响应共享通知记录，避免重复提示；快照恢复不通知。
+  const notifyProfileIssue = useCallback((profileId: string, message: string, failureKind?: FrpcFailureKind) => {
+    const profile = profilesRef.current.find((item) => item.id === profileId);
+    if (!profile) return;
+    const issue = getProfileIssue({
+      ...profile,
+      status: 'error',
+      stats: { ...profile.stats, lastError: message, lastFailureKind: failureKind },
+    });
+    if (!issue || reportedIssuesRef.current.get(profileId) === issue.summary) return;
+    reportedIssuesRef.current.set(profileId, issue.summary);
+    feishuToast.warning(`连接“${profile.name}”：${issue.summary}，详情见“需要处理”`);
+  }, []);
 
   // 统一收敛的运行时状态更新函数（后端事件作为唯一权威来源）
-  const applyRuntimeState = useCallback((event: FrpcRuntimeStateEvent): boolean => {
+  const applyRuntimeState = useCallback((event: FrpcRuntimeStateEvent, notify = true): boolean => {
     const currentLatest = latestEventTimestampsRef.current.get(event.profileId) ?? 0;
     // 仅当 event.timestamp 不早于该 profile 已收到的最新时间戳时才允许写入状态
     if (event.timestamp < currentLatest) {
       return false;
     }
     latestEventTimestampsRef.current.set(event.profileId, event.timestamp);
+    latestRuntimeStatesRef.current.set(event.profileId, event);
+    if (event.status === 'error') {
+      failureFallbacksRef.current.set(event.profileId, sanitizeRuntimeText(event.errorMessage || '进程运行异常'));
+    }
+    const errorMessage = event.status === 'error'
+      ? resolveFailureMessage(event.profileId, event.errorMessage || '进程运行异常')
+      : undefined;
+    const previousProfile = profilesRef.current.find((profile) => profile.id === event.profileId);
+    if (notify && errorMessage && !pendingStartsRef.current.has(event.profileId)
+      && (previousProfile?.status === 'running' || previousProfile?.status === 'starting')) {
+      notifyProfileIssue(event.profileId, errorMessage, previousProfile.stats.lastFailureKind);
+    }
+    if (event.status === 'stopped') {
+      reportedIssuesRef.current.delete(event.profileId);
+      failureFallbacksRef.current.delete(event.profileId);
+    }
 
     setProfiles((prev) =>
       prev.map((profile) => {
@@ -511,11 +560,10 @@ export function AppLayout() {
           nextPid = undefined;
           // 异常时完整保留上次启动时间，绝不清空为 undefined
           nextStartTime = profile.stats.startTime;
-          nextLastError = event.errorMessage || '进程运行异常';
+          nextLastError = errorMessage;
           nextLastWarning = undefined;
           if (profile.status === 'running' || profile.status === 'starting') {
             nextLastFailureKind = undefined;
-            feishuToast.error(`连接“${profile.name}”启动失败：进程异常退出。请点击操作列“...”菜单选择“查看日志”，或前往“运行日志”排查详细原因`);
           }
         }
 
@@ -534,30 +582,38 @@ export function AppLayout() {
       })
     );
     return true;
-  }, []);
-
-  const [runtimeLogs, setRuntimeLogs] = useState<LogEntry[]>([]);
+  }, [resolveFailureMessage, notifyProfileIssue]);
 
   const mergeRuntimeLogs = useCallback((events: FrpcRuntimeLogEvent[]) => {
     if (!events || events.length === 0) return;
-    setRuntimeLogs((previous) => mergeLogEntries(previous, events));
+    const safeEvents = events.map((event) => ({ ...event, message: sanitizeRuntimeText(event.message) }));
+    runtimeLogsRef.current = mergeLogEntries(runtimeLogsRef.current, safeEvents);
+    setRuntimeLogs(runtimeLogsRef.current);
 
-    for (const event of events) {
-      if (event.level === 'warn') {
+    for (const event of safeEvents) {
+      if (event.level === 'warn' || event.level === 'error') {
+        const startedAt = startAttemptTimesRef.current.get(event.profileId) ?? 0;
+        const status = latestRuntimeStatesRef.current.get(event.profileId)?.status
+          ?? (pendingStartsRef.current.has(event.profileId) ? 'starting' : profilesRef.current.find((profile) => profile.id === event.profileId)?.status);
+        if (status !== 'starting' && status !== 'running' && status !== 'error') continue;
+        if (!event.message.trim() || Date.parse(event.timestamp) < startedAt
+          || event.sequence <= (latestIssueSequencesRef.current.get(event.profileId) ?? 0)) continue;
+        latestIssueSequencesRef.current.set(event.profileId, event.sequence);
         setProfiles((previous) =>
-          previous.map((profile) =>
-            profile.id === event.profileId
-              ? {
-                  ...profile,
-                  stats: { ...profile.stats, lastWarning: event.message },
-                  updatedAt: Date.now(),
-                }
-              : profile
-          )
+          previous.map((profile) => {
+            if (profile.id !== event.profileId) return profile;
+            if (profile.status === 'error') {
+              const lastError = resolveFailureMessage(profile.id,
+                failureFallbacksRef.current.get(profile.id) || profile.stats.lastError || '进程运行异常');
+              return lastError === profile.stats.lastError ? profile : { ...profile, stats: { ...profile.stats, lastError } };
+            }
+            if (profile.status !== 'running' && profile.status !== 'starting') return profile;
+            return { ...profile, stats: { ...profile.stats, lastWarning: event.message } };
+          })
         );
       }
     }
-  }, []);
+  }, [resolveFailureMessage]);
 
   const hydrateRuntimeLogs = useCallback(async (profileId?: string) => {
     if (!isTauriEnv()) return;
@@ -623,7 +679,7 @@ export function AppLayout() {
           if (isCleanedUp || !isMounted) return;
           if (states && states.length > 0) {
             for (const state of states) {
-              applyRuntimeState(state);
+              applyRuntimeState(state, false);
             }
           }
           await hydrateRuntimeLogs();
@@ -716,9 +772,17 @@ export function AppLayout() {
       }
 
       // 启动前清除该方案既有的运行期日志，防止重启后新运行期日志条数较少时残留旧日志尾部
-      setRuntimeLogs((prev) => prev.filter((entry) => entry.profileId !== p.id));
+      runtimeLogsRef.current = runtimeLogsRef.current.filter((entry) => entry.profileId !== p.id);
+      setRuntimeLogs(runtimeLogsRef.current);
 
       const startTimestamp = Date.now();
+      pendingStartsRef.current.add(p.id);
+      startAttemptTimesRef.current.set(p.id, startTimestamp);
+      latestEventTimestampsRef.current.set(p.id, startTimestamp);
+      latestRuntimeStatesRef.current.delete(p.id);
+      latestIssueSequencesRef.current.delete(p.id);
+      reportedIssuesRef.current.delete(p.id);
+      failureFallbacksRef.current.delete(p.id);
 
       // 请求被接受前设为 starting，清除之前的 lastFailureKind 与 lastError，并预置本次启动时间
       setProfiles((prev) =>
@@ -745,12 +809,24 @@ export function AppLayout() {
           // 仅表示后端已接受启动请求并进入确认期；绝不在此将状态设为 running
           const states = await getRuntimeStates();
           const authoritativeState = states.find((state) => state.profileId === p.id);
-          if (authoritativeState?.status === 'running') {
-            applyRuntimeState(authoritativeState);
+          if (authoritativeState) {
+            applyRuntimeState(authoritativeState, false);
           }
           await hydrateRuntimeLogs(p.id);
+          const latestState = latestRuntimeStatesRef.current.get(p.id);
+          const warning = runtimeLogsRef.current.filter((entry) => entry.profileId === p.id
+            && Date.parse(entry.timestamp) >= startTimestamp
+            && (entry.level === 'warn' || entry.level === 'error')).at(-1);
+          if (latestState?.status === 'error') {
+            notifyProfileIssue(p.id, resolveFailureMessage(p.id, latestState.errorMessage || '进程运行异常'));
+          } else if (warning) {
+            notifyProfileIssue(p.id, warning.message);
+          }
         } else {
-          const errorMessage = res.error || 'FRP 进程启动失败，请检查核心、服务器地址和认证信息';
+          await hydrateRuntimeLogs(p.id);
+          const fallback = sanitizeRuntimeText(res.error || 'FRP 进程启动失败，请检查核心、服务器地址和认证信息');
+          failureFallbacksRef.current.set(p.id, fallback);
+          const errorMessage = resolveFailureMessage(p.id, fallback);
           setProfiles((prev) =>
             prev.map((item) =>
               item.id === p.id
@@ -768,10 +844,13 @@ export function AppLayout() {
                 : item
             )
           );
-          feishuToast.error(`连接“${p.name}”启动失败：${errorMessage}。请点击右侧“...”菜单查看日志或前往“运行日志”排查详细原因`);
+          notifyProfileIssue(p.id, errorMessage, res.failureKind);
         }
       } catch (e: any) {
-        const errorMessage = e?.message || '操作异常';
+        await hydrateRuntimeLogs(p.id);
+        const fallback = sanitizeRuntimeText(e?.message || '操作异常');
+        failureFallbacksRef.current.set(p.id, fallback);
+        const errorMessage = resolveFailureMessage(p.id, fallback);
         setProfiles((prev) =>
           prev.map((item) =>
             item.id === p.id
@@ -789,7 +868,9 @@ export function AppLayout() {
               : item
           )
         );
-        feishuToast.error(`连接“${p.name}”启动异常：${errorMessage}。请点击右侧“...”菜单查看日志或前往“运行日志”排查详细原因`);
+        notifyProfileIssue(p.id, errorMessage);
+      } finally {
+        pendingStartsRef.current.delete(p.id);
       }
     } else {
       // 停止：先设为 stopping，清除 lastFailureKind
