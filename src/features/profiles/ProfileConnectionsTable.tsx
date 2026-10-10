@@ -184,7 +184,7 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                 onClick={() => onBatchDelete?.(selectedProfiles)}
                 className="h-7 text-[11px] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
               >
-                <DeleteIcon className="w-3 h-3 mr-1 shrink-0" />
+                <DeleteIcon className="w-3 h-3 mr-1 shrink-0 [&_path]:fill-current" />
                 批量删除
               </Button>
             </span>
