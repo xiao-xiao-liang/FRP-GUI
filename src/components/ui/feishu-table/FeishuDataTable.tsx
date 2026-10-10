@@ -123,6 +123,7 @@ export interface FeishuDataTableProps<T> {
   activeTabKey?: string;
   onTabChange?: (key: string) => void;
   // Search & Toolbar
+  showToolbar?: boolean;
   searchable?: boolean;
   searchPlaceholder?: string;
   onAdd?: () => void;
@@ -177,6 +178,7 @@ export function FeishuDataTable<T extends Record<string, any>>({
                                                                  tabs,
                                                                  activeTabKey,
                                                                  onTabChange,
+                                                                 showToolbar = true,
                                                                  searchable = true,
                                                                  searchPlaceholder = "在列表中搜索",
                                                                  onAdd,
@@ -650,31 +652,33 @@ export function FeishuDataTable<T extends Record<string, any>>({
       )}
 
       {/* 2. 飞书原生功能工具栏 */}
-      <FeishuToolbar
-        title={title}
-        titleRight={titleRight}
-        totalCount={processedData.length}
-        searchable={searchable}
-        searchPlaceholder={searchPlaceholder}
-        onSearch={setSearchQuery}
-        columns={filterColumnMetas}
-        onSearchScopeChange={setSearchScopeKeys}
-        filterConditions={filterConditions}
-        filterConjunction={filterConjunction}
-        onFilterChange={(newConds, newConj) => {
-          setFilterConditions(newConds);
-          setFilterConjunction(newConj);
-        }}
-        isFilterOpen={isFilterOpen}
-        onToggleFilterOpen={(open) => setIsFilterOpen(open !== undefined ? open : !isFilterOpen)}
-        selectedCount={selectedKeys.length}
-        onBatchDelete={onBatchDelete}
-        onAdd={onAdd}
-        addButtonText={addButtonText}
-        onExport={onExport}
-        customLeftTools={customLeftTools}
-        customRightTools={customRightTools}
-      />
+      {showToolbar && (
+        <FeishuToolbar
+          title={title}
+          titleRight={titleRight}
+          totalCount={processedData.length}
+          searchable={searchable}
+          searchPlaceholder={searchPlaceholder}
+          onSearch={setSearchQuery}
+          columns={filterColumnMetas}
+          onSearchScopeChange={setSearchScopeKeys}
+          filterConditions={filterConditions}
+          filterConjunction={filterConjunction}
+          onFilterChange={(newConds, newConj) => {
+            setFilterConditions(newConds);
+            setFilterConjunction(newConj);
+          }}
+          isFilterOpen={isFilterOpen}
+          onToggleFilterOpen={(open) => setIsFilterOpen(open !== undefined ? open : !isFilterOpen)}
+          selectedCount={selectedKeys.length}
+          onBatchDelete={onBatchDelete}
+          onAdd={onAdd}
+          addButtonText={addButtonText}
+          onExport={onExport}
+          customLeftTools={customLeftTools}
+          customRightTools={customRightTools}
+        />
+      )}
 
       {/* 3. 核心内容展示区（支持表格视图与卡片视图平滑切换） */}
       {viewMode === "card" && renderCardView ? (

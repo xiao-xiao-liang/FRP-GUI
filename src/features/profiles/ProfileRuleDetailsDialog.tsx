@@ -95,6 +95,7 @@ export const ProfileRuleDetailsDialog: React.FC<ProfileRuleDetailsDialogProps> =
           columns={COLUMNS}
           data={rows}
           rowKey="id"
+          showToolbar={false}
           selectable={false}
           searchable={false}
         />
