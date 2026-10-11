@@ -27,16 +27,15 @@ import { SettingsPage } from './features/settings/SettingsPage';
 import { ConfigEditorModal } from './features/editor/ConfigEditorModal';
 import { SyncModal } from './features/sync/SyncModal';
 import { DiagnosticModal } from './features/diagnostics/DiagnosticModal';
-import { Badge } from './components/ui/badge';
-import { 
-  RunIcon, StopIcon, DashboardIcon, ServicesIcon, TerminalIcon, 
-  PluginIcon, RemoteHostIcon, MobileIcon 
+import { AppSidebar } from './components/layout/AppSidebar';
+import { useSidebarLayout } from './components/layout/useSidebarLayout';
+import {
+  RunIcon, StopIcon, ServicesIcon, MobileIcon
 } from './components/icons';
-import { ChevronRight, MonitorSmartphone, Settings as SettingsIcon } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 import { feishuToast, FeishuToastContainer } from './components/ui/FeishuToast';
 import { feishuConfirm, FeishuDialogPortalContainer } from './components/ui/FeishuDialog';
 import { FEISHU_FONT_FAMILY } from './components/ui/feishu-table';
-import { cn } from './lib/utils';
 
 const INITIAL_PROFILES: Profile[] = [
   {
@@ -186,6 +185,7 @@ export function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const sidebarLayout = useSidebarLayout();
 
   // 根据当前 URL 路径精准推导导航激活态
   const currentNav = useMemo<'profiles' | 'logs' | 'cores' | 'servers' | 'settings'>(() => {
@@ -1157,129 +1157,20 @@ export function AppLayout() {
       {/* 飞书 Dialog 全局容器 */}
       <FeishuDialogPortalContainer />
 
-      {/* 左侧飞书风格导航栏 (1:1 飞书 AppShell 侧边栏规范) */}
-      <aside className="w-56 bg-[#F8F9FA] border-r border-[#DEE0E3] flex flex-col justify-between shrink-0 select-none">
-        <div>
-          {/* Logo 区域 */}
-          <div className="h-12 flex items-center gap-2.5 px-4 border-b border-[#DEE0E3]">
-            <div className="w-6 h-6 rounded-[6px] bg-[#165DFF] flex items-center justify-center text-white shadow-xs shrink-0">
-              <DashboardIcon className="w-3.5 h-3.5" />
-            </div>
-            <div className="min-w-0">
-              <h1 className="font-semibold text-[14px] text-[#1F2329] tracking-tight truncate leading-tight">FRP GUI Pro</h1>
-              <p className="text-[11px] text-[#8F959E] truncate">飞书设计体系穿透管理</p>
-            </div>
-          </div>
-
-          {/* 导航菜单 (点击即时触发 URL 路由跳转) */}
-          <nav className="p-2 space-y-1">
-            <button
-              type="button"
-              onClick={() => {
-                setLogTargetProfileId(null);
-                navigate('/profiles');
-              }}
-              className={cn(
-                "relative flex h-9 w-full items-center justify-between rounded-[6px] px-2.5 text-[14px] leading-[22px] transition-colors duration-150 select-none cursor-pointer",
-                currentNav === 'profiles'
-                  ? "bg-[#EBEDF0] font-medium text-[#1F2329]"
-                  : "text-[#1F2329] hover:bg-[rgba(31,35,41,0.05)]"
-              )}
-            >
-              <div className="flex min-w-0 items-center gap-2.5">
-                <DashboardIcon className="w-4 h-4 shrink-0" />
-                <span className="truncate">我的连接</span>
-              </div>
-              <Badge variant="secondary" className="text-[11px] py-0 px-1.5 h-5 rounded-[4px] tabular-nums">
-                {profiles.length}
-              </Badge>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => navigate('/logs')}
-              className={cn(
-                "relative flex h-9 w-full items-center justify-between rounded-[6px] px-2.5 text-[14px] leading-[22px] transition-colors duration-150 select-none cursor-pointer",
-                currentNav === 'logs'
-                  ? "bg-[#EBEDF0] font-medium text-[#1F2329]"
-                  : "text-[#1F2329] hover:bg-[rgba(31,35,41,0.05)]"
-              )}
-            >
-              <div className="flex min-w-0 items-center gap-2.5">
-                <TerminalIcon className="w-4 h-4 shrink-0" />
-                <span className="truncate">实时日志</span>
-              </div>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => navigate('/cores')}
-              className={cn(
-                "relative flex h-9 w-full items-center justify-between rounded-[6px] px-2.5 text-[14px] leading-[22px] transition-colors duration-150 select-none cursor-pointer",
-                currentNav === 'cores'
-                  ? "bg-[#EBEDF0] font-medium text-[#1F2329]"
-                  : "text-[#1F2329] hover:bg-[rgba(31,35,41,0.05)]"
-              )}
-            >
-              <div className="flex min-w-0 items-center gap-2.5">
-                <PluginIcon className="w-4 h-4 shrink-0" />
-                <span className="truncate">FRP 核心管理</span>
-              </div>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => navigate('/servers')}
-              className={cn(
-                "relative flex h-9 w-full items-center justify-between rounded-[6px] px-2.5 text-[14px] leading-[22px] transition-colors duration-150 select-none cursor-pointer",
-                currentNav === 'servers'
-                  ? "bg-[#EBEDF0] font-medium text-[#1F2329]"
-                  : "text-[#1F2329] hover:bg-[rgba(31,35,41,0.05)]"
-              )}
-            >
-              <div className="flex min-w-0 items-center gap-2.5">
-                <RemoteHostIcon className="w-4 h-4 shrink-0" />
-                <span className="truncate">服务器节点</span>
-              </div>
-              {serverNodes.length > 0 && (
-                <Badge variant="secondary" className="text-[11px] py-0 px-1.5 h-5 rounded-[4px] tabular-nums">
-                  {serverNodes.length}
-                </Badge>
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => navigate('/settings')}
-              className={cn(
-                "relative flex h-9 w-full items-center justify-between rounded-[6px] px-2.5 text-[14px] leading-[22px] transition-colors duration-150 select-none cursor-pointer",
-                currentNav === 'settings'
-                  ? "bg-[#EBEDF0] font-medium text-[#1F2329]"
-                  : "text-[#1F2329] hover:bg-[rgba(31,35,41,0.05)]"
-              )}
-            >
-              <div className="flex min-w-0 items-center gap-2.5">
-                <SettingsIcon className="w-4 h-4 shrink-0" />
-                <span className="truncate">设置</span>
-              </div>
-            </button>
-          </nav>
-        </div>
-
-        {/* 底部环境状态 */}
-        <div className="p-3 border-t border-[#DEE0E3] bg-[#F8F9FA]">
-          <div className="flex items-center justify-between text-[12px] text-[#646A75]">
-            <span className="flex items-center gap-1.5 font-medium truncate">
-              <MonitorSmartphone className="w-4 h-4 text-[#165DFF] shrink-0" />
-              {isTauriEnv() ? 'Tauri 桌面端' : '桌面开发模式'}
-            </span>
-            <Badge variant="success" className="text-[11px] py-0.5 px-1.5 rounded-[4px]">就绪</Badge>
-          </div>
-        </div>
-      </aside>
+      <AppSidebar
+        {...sidebarLayout}
+        currentNav={currentNav}
+        profileCount={profiles.length}
+        serverNodeCount={serverNodes.length}
+        isDesktop={isTauriEnv()}
+        onNavigate={(nav) => {
+          if (nav === 'profiles') setLogTargetProfileId(null);
+          navigate(`/${nav}`);
+        }}
+      />
 
       {/* 右侧主体区域 (纯白背景 #FFFFFF) */}
-      <main className="flex-1 flex flex-col overflow-hidden bg-white">
+      <main className="min-w-0 flex-1 flex flex-col overflow-hidden bg-white">
         {/* 视图内容区 (路由与 URL 动态绑定) */}
         <div className="flex-1 overflow-y-auto p-6 bg-white">
           <Routes>
