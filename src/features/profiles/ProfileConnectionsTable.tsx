@@ -14,6 +14,8 @@ import {
   DropdownMenuItem,
 } from '../../components/ui/dropdown-menu';
 import { getBatchActionTargets } from '../../services/profile-organization';
+import { getProfileIssue } from '../../services/profile-issues';
+import { FeishuPill } from '../../components/ui/feishu-table/FeishuPill';
 import { ProxyTypePill } from './proxy-type-presentation';
 import {
   MoreHorizontal,
@@ -31,6 +33,7 @@ const PROFILE_TABLE_COLUMNS = [
   { key: 'name', title: '连接名称', width: 220, minWidth: 160, maxWidth: 420 },
   { key: 'proxies', title: '穿透规则', width: 340, minWidth: 200, maxWidth: 540 },
   { key: 'startTime', title: '上次启动', width: 130, minWidth: 90, maxWidth: 200 },
+  { key: 'status', title: '状态', width: 160, minWidth: 150, maxWidth: 260 },
   { key: 'actions', title: '操作', width: 140, minWidth: 140, maxWidth: 140, resizable: false, fixed: 'right' },
 ] as const;
 
@@ -54,6 +57,7 @@ export interface ProfileConnectionsTableProps {
   onRepairCore: () => void;
   onTogglePin?: (p: Profile) => void;
   onViewRuleDetails?: (p: Profile) => void;
+  onViewIssue?: (p: Profile) => void;
 }
 
 export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = ({
@@ -74,6 +78,7 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
   onRepairCore,
   onTogglePin,
   onViewRuleDetails,
+  onViewIssue,
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -226,9 +231,10 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
       {/* 2. 表格滚动容器 */}
       <div className="flex-1 overflow-x-auto overflow-y-hidden relative custom-scrollbar">
         <table
-          className="text-left border-collapse text-[13px] w-full min-w-[620px]"
+          className="text-left border-collapse text-[13px] w-full"
           style={{
             tableLayout: 'fixed',
+            minWidth: totalTableWidth,
             width: hasResized ? `${totalTableWidth}px` : '100%',
           }}
         >
@@ -296,7 +302,7 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
           <tbody className="divide-y divide-[#DEE0E3]/60 bg-white">
             {paginatedProfiles.length === 0 ? (
               <tr>
-                <td colSpan={5} className="p-0 text-center bg-white py-12">
+                <td colSpan={PROFILE_TABLE_COLUMNS.length + 1} className="p-0 text-center bg-white py-12">
                   <FeishuEmptyState
                     title="暂无连接方案"
                     description="点击右上角“新建连接”即可创建内网穿透方案"
@@ -310,6 +316,12 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                 const isStopping = record.status === 'stopping';
                 const isRunning = record.status === 'running'
                   || (record.status === 'error' && Boolean(record.stats.pid));
+                const issue = getProfileIssue(record);
+                const statusLabel = record.status === 'error'
+                  ? (record.stats.lastFailureKind === 'startup' || record.stats.lastFailureKind === 'core_invalid' ? '启动失败' : '异常中断')
+                  : isStarting ? '启动中' : isStopping ? '停止中' : isRunning ? '运行中' : '未运行';
+                const statusVariant = record.status === 'error'
+                  ? 'red' : issue || isStarting || isStopping ? 'orange' : isRunning ? 'green' : 'gray';
 
                 // 穿透规则提取
                 const proxies = (record.config as any)?.proxies || [];
@@ -428,6 +440,33 @@ export const ProfileConnectionsTable: React.FC<ProfileConnectionsTableProps> = (
                       ) : (
                         <span className="text-[12px] text-[#8F959E]">—</span>
                       )}
+                    </td>
+
+                    {/* 状态与简短原因保留固定高度，异常变化不挤压其他连接。 */}
+                    <td className="min-w-0 px-3 py-2">
+                      <div className="flex h-[44px] min-w-0 flex-col justify-center gap-1">
+                        <div className="flex items-center gap-2">
+                          <FeishuPill variant={statusVariant} className="h-[22px] px-2 text-[11px]">
+                            {statusLabel}
+                          </FeishuPill>
+                          {issue && onViewIssue && (
+                            <button
+                              type="button"
+                              onClick={() => onViewIssue(record)}
+                              aria-label={`查看 ${record.name} 的异常详情`}
+                              aria-haspopup="dialog"
+                              className="shrink-0 cursor-pointer rounded-[4px] text-[11px] text-[#3370FF] hover:text-[#245BDB] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3370FF]"
+                            >
+                              查看详情
+                            </button>
+                          )}
+                        </div>
+                        {issue && (
+                          <span title={issue.summary} className="truncate text-[11px] leading-4 text-[#646A73]">
+                            {issue.summary}
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* 操作列 (sticky right-0) */}

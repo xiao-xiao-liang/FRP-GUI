@@ -8,6 +8,7 @@ import { FEISHU_FONT_FAMILY } from '../../components/ui/feishu-table';
 import { ProfileRuleDetailsDialog } from './ProfileRuleDetailsDialog';
 import { ProfileConnectionsTable } from './ProfileConnectionsTable';
 import { ProfileMetricsCards } from './ProfileMetricsCards';
+import { ProfileIssuesDrawer } from './ProfileIssuesDrawer';
 import { Plus } from 'lucide-react';
 
 interface ProfileListProps {
@@ -15,6 +16,8 @@ interface ProfileListProps {
   traffic?: RuntimeTrafficState;
   defaultSort?: ProfileSort;
   isBatchOperating?: boolean;
+  issueProfileId?: string | null;
+  onCloseIssueDetails?: () => void;
   onTogglePin?: (p: Profile) => void;
   onBatchStart?: (targets: Profile[]) => void;
   onBatchStop?: (targets: Profile[]) => void;
@@ -35,6 +38,8 @@ export const ProfileList: React.FC<ProfileListProps> = ({
   traffic,
   defaultSort = 'pinned_updated',
   isBatchOperating = false,
+  issueProfileId,
+  onCloseIssueDetails,
   onTogglePin,
   onBatchStart,
   onBatchStop,
@@ -53,6 +58,19 @@ export const ProfileList: React.FC<ProfileListProps> = ({
   const [confirmBatchStop, setConfirmBatchStop] = useState(false);
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
   const [viewingRuleProfile, setViewingRuleProfile] = useState<Profile | null>(null);
+  const [viewingIssues, setViewingIssues] = useState(false);
+  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!issueProfileId) return;
+    setSelectedIssueId(issueProfileId);
+    setViewingIssues(true);
+  }, [issueProfileId]);
+
+  const handleCloseIssues = () => {
+    setViewingIssues(false);
+    onCloseIssueDetails?.();
+  };
 
   // 保持采用已保存的默认排序
   const sortedProfiles = useMemo(() => {
@@ -87,7 +105,7 @@ export const ProfileList: React.FC<ProfileListProps> = ({
       {/* 顶部标题与新建按钮 */}
       <div className="flex flex-wrap items-center justify-between gap-4 pb-1">
         <div>
-          <h1 className="text-[18px] font-semibold text-[#1F2329] tracking-tight">我的连接</h1>
+          <h1 id="profile-list-title" tabIndex={-1} className="text-[18px] font-semibold text-[#1F2329] tracking-tight">我的连接</h1>
           <p className="text-[12px] text-[#8F959E] mt-0.5">统一管理与快速访问所有内网穿透连接</p>
         </div>
         <div className="flex items-center gap-2.5">
@@ -101,14 +119,14 @@ export const ProfileList: React.FC<ProfileListProps> = ({
         </div>
       </div>
 
-      {/* 4 个大盘指标卡片与待处理连接 */}
+      {/* 4 个大盘指标卡片 */}
       <ProfileMetricsCards
         profiles={sortedProfiles}
         traffic={traffic}
-        onDiagnose={onDiagnose}
-        onViewLogs={onViewLogs}
-        onEdit={onEdit}
-        onRepairCore={onRepairCore}
+        onViewIssues={() => {
+          setSelectedIssueId(null);
+          setViewingIssues(true);
+        }}
       />
 
       {/* 专用连接表格 */}
@@ -130,6 +148,22 @@ export const ProfileList: React.FC<ProfileListProps> = ({
         onRepairCore={onRepairCore}
         onTogglePin={onTogglePin}
         onViewRuleDetails={(record) => setViewingRuleProfile(record)}
+        onViewIssue={(record) => {
+          setSelectedIssueId(record.id);
+          setViewingIssues(true);
+        }}
+      />
+
+      <ProfileIssuesDrawer
+        visible={viewingIssues}
+        profiles={sortedProfiles}
+        selectedProfileId={selectedIssueId}
+        onSelectProfile={setSelectedIssueId}
+        onClose={handleCloseIssues}
+        onEdit={onEdit}
+        onViewLogs={onViewLogs}
+        onDiagnose={onDiagnose}
+        onRepairCore={onRepairCore}
       />
 
       {/* 规则详情只读弹层 */}

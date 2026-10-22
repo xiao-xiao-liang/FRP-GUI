@@ -184,7 +184,7 @@ const INITIAL_CORES: FrpCore[] = [];
 export function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const sidebarLayout = useSidebarLayout();
 
   // 根据当前 URL 路径精准推导导航激活态
@@ -507,8 +507,24 @@ export function AppLayout() {
     });
     if (!issue || reportedIssuesRef.current.get(profileId) === issue.summary) return;
     reportedIssuesRef.current.set(profileId, issue.summary);
-    feishuToast.warning(`连接“${profile.name}”：${issue.summary}，详情见“需要处理”`);
-  }, []);
+    const toastId = feishuToast.show({
+      type: 'warning',
+      content: `连接“${profile.name}”：${issue.summary}`,
+      duration: 3500,
+      action: (
+        <button
+          type="button"
+          onClick={() => {
+            feishuToast.dismiss(toastId);
+            navigate(`/profiles?issueId=${encodeURIComponent(profileId)}`);
+          }}
+          className="cursor-pointer rounded-[4px] text-[12px] text-[#3370FF] hover:text-[#245BDB] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3370FF]"
+        >
+          查看详情
+        </button>
+      ),
+    });
+  }, [navigate]);
 
   // 统一收敛的运行时状态更新函数（后端事件作为唯一权威来源）
   const applyRuntimeState = useCallback((event: FrpcRuntimeStateEvent, notify = true): boolean => {
@@ -1184,6 +1200,13 @@ export function AppLayout() {
                   traffic={runtimeTraffic}
                   defaultSort={appSettings.profileSort}
                   isBatchOperating={isBatchOperating}
+                  issueProfileId={searchParams.get('issueId')}
+                  onCloseIssueDetails={() => {
+                    if (!searchParams.has('issueId')) return;
+                    const nextParams = new URLSearchParams(searchParams);
+                    nextParams.delete('issueId');
+                    setSearchParams(nextParams, { replace: true });
+                  }}
                   onTogglePin={handleTogglePin}
                   onBatchStart={handleBatchStart}
                   onBatchStop={handleBatchStop}
